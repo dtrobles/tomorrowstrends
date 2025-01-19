@@ -1,0 +1,13 @@
+torch
+tweepy
+praw
+pytrends
+newsapi-python
+nltk
+langdetect
+pandas
+numpy
+scikit-learn
+python-dotenv
+
+py -m pip install <package-name>
