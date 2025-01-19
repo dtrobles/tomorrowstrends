@@ -51,7 +51,7 @@ def collect_google_trends_data(start_date, end_date, country_codes, kw_list):
             timeframe = f"{single_day.strftime('%Y-%m-%d')} {single_day.strftime('%Y-%m-%d')}"
             try:
                 pytrends.build_payload(kw_list, timeframe=timeframe, geo=country)
-                time.sleep(2)
+                time.sleep(2)  # small delay
                 cdata = pytrends.interest_over_time()
                 if not cdata.empty:
                     cdata['country'] = country
@@ -59,6 +59,7 @@ def collect_google_trends_data(start_date, end_date, country_codes, kw_list):
             except Exception as e:
                 logging.warning(f"Trends error for {country} on {single_day}: {e}")
                 if "429" in str(e):
+                    logging.warning("Rate limit encountered. Sleeping 60s...")
                     time.sleep(60)
                 continue
 
@@ -75,7 +76,8 @@ def collect_google_trends_data(start_date, end_date, country_codes, kw_list):
 def collect_newsapi_data_by_country(start_date, end_date, country_codes):
     """
     Multiple queries for each country => each query gets up to 100 articles
-    on page=1 only (avoid free-tier limit error).
+    on page=1 only (avoid free-tier limit error). 
+    Max 30 days allowed for from_param / to with a free-tier account.
     """
     newsapi = NewsApiClient(api_key=NEWSAPI_KEY)
     all_articles = []
@@ -84,8 +86,10 @@ def collect_newsapi_data_by_country(start_date, end_date, country_codes):
         'KR': [
             "korea", "korea news", "korean news",
             "korea economy", "korean economy",
-            "korea politics", "korea technology",
-            "korea finance", "korean finance"
+            "korea politics", "korean politics",
+            "korea technology", "korean technology",
+            "korea finance", "korean finance",
+            "korean"
         ],
         'JP': ["japan", "japan news", "japan economy", "japan politics"],
         'US': ["united states", "us news", "us economy", "us politics"],
@@ -130,7 +134,7 @@ def collect_newsapi_data_by_country(start_date, end_date, country_codes):
                     'source': art['source']['name'] if art.get('source') else '',
                     'url': art.get('url', '')
                 })
-            time.sleep(1)
+            time.sleep(1)  # small delay
 
     df = pd.DataFrame(all_articles)
     df.drop_duplicates(subset=['url'], inplace=True)
@@ -176,13 +180,6 @@ def preprocess_news(df):
 # 3) CLUSTER MODEL (TOPIC)
 # -------------------------------------------------------------------------
 def train_cluster_model(df, n_clusters=10, cluster_vec_path='cluster_vectorizer.pkl', kmeans_path='kmeans_model.pkl'):
-    """
-    Fit a TF-IDF vectorizer + KMeans on the entire training set => save to disk.
-    Return df with 'topic_id' assigned.
-    """
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.cluster import KMeans
-
     cluster_vectorizer = TfidfVectorizer(max_features=3000)
     X_cluster = cluster_vectorizer.fit_transform(df['cleaned_text'])
 
@@ -197,9 +194,6 @@ def train_cluster_model(df, n_clusters=10, cluster_vec_path='cluster_vectorizer.
 
 
 def assign_topics(df, cluster_vec_path='cluster_vectorizer.pkl', kmeans_path='kmeans_model.pkl'):
-    """
-    Load the previously trained cluster vectorizer + KMeans => assign 'topic_id'.
-    """
     if not os.path.exists(cluster_vec_path) or not os.path.exists(kmeans_path):
         logging.error("No trained cluster model found! Please run training first.")
         return df
@@ -212,24 +206,29 @@ def assign_topics(df, cluster_vec_path='cluster_vectorizer.pkl', kmeans_path='km
     return df
 
 # -------------------------------------------------------------------------
-# 4) LABEL TOPIC DAY-TO-DAY TRENDS
+# 4) LABEL TOPIC TRENDS (7 / 14 DAYS)
 # -------------------------------------------------------------------------
-def label_topic_trends(df, date_col='date', topic_col='topic_id'):
+def label_topic_trends(df, date_col='date', topic_col='topic_id', shifts=[7,14]):
     """
-    For each (topic_id, date), count coverage => see if next day's coverage is bigger => label=1
+    For each (topic_id, date), count coverage => see if coverage increases after 'shift' days.
+    Create separate labels for shift=7 and shift=14.
     """
-    coverage = df.groupby([topic_col, date_col]).size().reset_index(name='count')
-    coverage.sort_values(by=[topic_col, date_col], inplace=True)
-    coverage['next_count'] = coverage.groupby(topic_col)['count'].shift(-1)
+    for shift in shifts:
+        coverage = df.groupby([topic_col, date_col]).size().reset_index(name='count')
+        coverage.sort_values(by=[topic_col, date_col], inplace=True)
+        coverage[f'next_count_shift_{shift}'] = coverage.groupby(topic_col)['count'].shift(-shift)
 
-    coverage['label'] = coverage.apply(
-        lambda row: 1 if pd.notnull(row['next_count']) and row['next_count'] > row['count'] else 0,
-        axis=1
-    )
+        coverage[f'label_shift_{shift}'] = coverage.apply(
+            lambda row: 1 if pd.notnull(row[f'next_count_shift_{shift}']) and row[f'next_count_shift_{shift}'] > row['count'] else 0,
+            axis=1
+        )
 
-    out = pd.merge(df, coverage[[topic_col, date_col, 'label']], on=[topic_col, date_col], how='left')
-    out['label'] = out['label'].fillna(0)
-    return out
+        df = pd.merge(df, coverage[[topic_col, date_col, f'label_shift_{shift}']], on=[topic_col, date_col], how='left')
+
+    for shift in shifts:
+        df[f'label_shift_{shift}'] = df[f'label_shift_{shift}'].fillna(0).astype(int)
+
+    return df
 
 # -------------------------------------------------------------------------
 # 5) DATASET
@@ -284,7 +283,8 @@ def train_classifier(model, loader, criterion, optimizer, epochs=5):
 def main(do_train=True):
     country_code = input("Enter the 2-letter country code (e.g. 'KR'): ")
 
-    start_date = datetime.now() - timedelta(days=15)
+    # Collect up to 30 days of data
+    start_date = datetime.now() - timedelta(days=30)
     end_date = datetime.now() - timedelta(days=1)
 
     # 1) Collect Data
@@ -303,9 +303,12 @@ def main(do_train=True):
         # a) Train cluster model => assign topics
         n_data = train_cluster_model(n_data, n_clusters=10)
 
-        # b) Label day-to-day coverage
-        labeled = label_topic_trends(n_data)
-        print("Label distribution:\n", labeled['label'].value_counts())
+        # b) Label coverage for 7 and 14 days
+        labeled = label_topic_trends(n_data, shifts=[7,14])
+        print("Label distribution for 7-day shift:")
+        print(labeled['label_shift_7'].value_counts())
+        print("\nLabel distribution for 14-day shift:")
+        print(labeled['label_shift_14'].value_counts())
 
         # c) Merge Google data
         if not g_data.empty:
@@ -314,111 +317,173 @@ def main(do_train=True):
         else:
             combined = labeled.copy()
             for kw in google_kw:
-                combined[kw] = 0
+                combined.loc[:, kw] = 0
 
-        # fill missing numeric columns
         for kw in google_kw:
             if kw not in combined.columns:
                 combined.loc[:, kw] = 0
             else:
                 combined.loc[:, kw] = combined[kw].fillna(0)
 
-        # d) Build classifier features
-        clf_vectorizer = TfidfVectorizer(max_features=3000)
-        X_text = clf_vectorizer.fit_transform(combined['cleaned_text'])
-        joblib.dump(clf_vectorizer, "clf_vectorizer.pkl")
+        # d) Build classifier features for SHIFT=7
+        vec_7 = TfidfVectorizer(max_features=3000)
+        X_text_7 = vec_7.fit_transform(combined['cleaned_text'])
+        joblib.dump(vec_7, "clf_vectorizer_7days.pkl")
 
-        google_mat = csc_matrix(combined[google_kw].values)
-        X_final = hstack([X_text, google_mat]).tocsr()
-        y_final = combined['label']
+        google_mat_7 = csc_matrix(combined[google_kw].values)
+        X_final_7 = hstack([X_text_7, google_mat_7]).tocsr()
+        y_final_7 = combined['label_shift_7']
 
-        # e) Class weighting
-        c_counts = y_final.value_counts()
-        if 1 in c_counts:
-            weight_1 = float(c_counts[0]) / float(c_counts[1])
+        # e) Class weighting for SHIFT=7
+        c_counts_7 = y_final_7.value_counts()
+        if 1 in c_counts_7:
+            weight_1_7 = float(c_counts_7[0]) / float(c_counts_7[1])
         else:
-            weight_1 = 1.0
-        weight_0 = 1.0
-        print(f"Class Weights => 0:{weight_0}, 1:{weight_1}")
-        w_tensor = torch.tensor([weight_0, weight_1])
+            weight_1_7 = 1.0
+        weight_0_7 = 1.0
+        print(f"Class Weights (7 days) => 0:{weight_0_7}, 1:{weight_1_7}")
+        w_tensor_7 = torch.tensor([weight_0_7, weight_1_7])
 
-        # f) Train the classifier
-        dataset = TrendDataset(X_final, y_final)
-        loader = DataLoader(dataset, batch_size=32, shuffle=True)
+        # f) Train classifier for SHIFT=7
+        ds_7 = TrendDataset(X_final_7, y_final_7)
+        loader_7 = DataLoader(ds_7, batch_size=32, shuffle=True)
 
-        input_dim = X_final.shape[1]
-        model = TrendPredictor(input_size=input_dim, hidden_size=128, num_classes=2)
-        criterion = nn.CrossEntropyLoss(weight=w_tensor)
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-        train_classifier(model, loader, criterion, optimizer, epochs=5)
+        input_dim_7 = X_final_7.shape[1]
+        model_7 = TrendPredictor(input_size=input_dim_7, hidden_size=128, num_classes=2)
+        criterion_7 = nn.CrossEntropyLoss(weight=w_tensor_7)
+        optimizer_7 = torch.optim.Adam(model_7.parameters(), lr=0.001)
+        print("\nTraining Classifier (7 days):")
+        train_classifier(model_7, loader_7, criterion_7, optimizer_7, epochs=5)
+        torch.save(model_7.state_dict(), "trend_predictor_7days.pth")
 
-        torch.save(model.state_dict(), "trend_predictor.pth")
-        logging.info("Finished training & saved model/cluster artifacts.")
+        # g) Build classifier features for SHIFT=14
+        vec_14 = TfidfVectorizer(max_features=3000)
+        X_text_14 = vec_14.fit_transform(combined['cleaned_text'])
+        joblib.dump(vec_14, "clf_vectorizer_14days.pkl")
+
+        google_mat_14 = csc_matrix(combined[google_kw].values)
+        X_final_14 = hstack([X_text_14, google_mat_14]).tocsr()
+        y_final_14 = combined['label_shift_14']
+
+        c_counts_14 = y_final_14.value_counts()
+        if 1 in c_counts_14:
+            weight_1_14 = float(c_counts_14[0]) / float(c_counts_14[1])
+        else:
+            weight_1_14 = 1.0
+        weight_0_14 = 1.0
+        print(f"\nClass Weights (14 days) => 0:{weight_0_14}, 1:{weight_1_14}")
+        w_tensor_14 = torch.tensor([weight_0_14, weight_1_14])
+
+        ds_14 = TrendDataset(X_final_14, y_final_14)
+        loader_14 = DataLoader(ds_14, batch_size=32, shuffle=True)
+
+        input_dim_14 = X_final_14.shape[1]
+        model_14 = TrendPredictor(input_size=input_dim_14, hidden_size=128, num_classes=2)
+        criterion_14 = nn.CrossEntropyLoss(weight=w_tensor_14)
+        optimizer_14 = torch.optim.Adam(model_14.parameters(), lr=0.001)
+        print("\nTraining Classifier (14 days):")
+        train_classifier(model_14, loader_14, criterion_14, optimizer_14, epochs=5)
+        torch.save(model_14.state_dict(), "trend_predictor_14days.pth")
+
+        logging.info("Finished training & saved all models/cluster artifacts.")
 
     # ------------------------- INFERENCE PIPELINE -------------------------
     else:
-        # If not training, we assume the cluster model & classifier are already trained
-        # 1) Assign topics with saved cluster model
+        # Load cluster model and assign topics
         n_data = assign_topics(n_data)
-        # 2) Merge google
+
+        # Merge Google data
         if not g_data.empty:
             g_data['date'] = pd.to_datetime(g_data['date'])
             combined = pd.merge(n_data, g_data, on=['date','country'], how='left')
         else:
             combined = n_data.copy()
             for kw in google_kw:
-                combined[kw] = 0
+                combined.loc[:, kw] = 0
 
-        # fill missing numeric columns
         for kw in google_kw:
             if kw not in combined.columns:
                 combined.loc[:, kw] = 0
             else:
                 combined.loc[:, kw] = combined[kw].fillna(0)
 
-        # 3) Build classifier features with saved clf_vectorizer
-        if not os.path.exists("clf_vectorizer.pkl"):
-            logging.error("No clf_vectorizer found, please train first.")
+        # 1) Load classifiers & vectorizers for 7-day and 14-day
+        if not os.path.exists("clf_vectorizer_7days.pkl") or not os.path.exists("trend_predictor_7days.pth"):
+            logging.error("7-day model files not found. Please train first.")
+            return
+        if not os.path.exists("clf_vectorizer_14days.pkl") or not os.path.exists("trend_predictor_14days.pth"):
+            logging.error("14-day model files not found. Please train first.")
             return
 
-        clf_vectorizer = joblib.load("clf_vectorizer.pkl")
-        X_text = clf_vectorizer.transform(combined['cleaned_text'])
-        google_mat = csc_matrix(combined[google_kw].values)
-        X_infer = hstack([X_text, google_mat]).tocsr()
+        vec_7 = joblib.load("clf_vectorizer_7days.pkl")
+        vec_14 = joblib.load("clf_vectorizer_14days.pkl")
 
-        # 4) Load classifier
-        input_dim = X_infer.shape[1]
-        model_infer = TrendPredictor(input_size=input_dim)
-        # Use weights_only=True to avoid future unpickling warnings:
-        state_dict = torch.load("trend_predictor.pth", weights_only=True)
-        model_infer.load_state_dict(state_dict)
-        model_infer.eval()
+        # 2) Features for SHIFT=7
+        X_text_7_infer = vec_7.transform(combined['cleaned_text'])
+        google_mat_7_infer = csc_matrix(combined[google_kw].values)
+        X_infer_7 = hstack([X_text_7_infer, google_mat_7_infer]).tocsr()
 
-        # 5) Predict
-        feats_tensor = torch.tensor(X_infer.toarray(), dtype=torch.float32)
+        model_7_infer = TrendPredictor(input_size=X_infer_7.shape[1], hidden_size=128, num_classes=2)
+        st_7 = torch.load("trend_predictor_7days.pth", weights_only=True)
+        model_7_infer.load_state_dict(st_7)
+        model_7_infer.eval()
+
+        feats_7_tensor = torch.tensor(X_infer_7.toarray(), dtype=torch.float32)
         with torch.no_grad():
-            out = model_infer(feats_tensor)
-            _, preds = torch.max(out, dim=1)
-        combined['prediction'] = preds.numpy()
+            out_7 = model_7_infer(feats_7_tensor)
+            _, pred_7 = torch.max(out_7, dim=1)
 
-        # Show predicted=1
-        trending = combined[combined['prediction'] == 1]
-        print(f"Total articles: {len(combined)}")
-        print(f"Predicted 1: {len(trending)}")
-        print(trending[['date','title','topic_id','prediction']])
+        combined['prediction_7days'] = pred_7.numpy()
 
+        # 3) Features for SHIFT=14
+        X_text_14_infer = vec_14.transform(combined['cleaned_text'])
+        google_mat_14_infer = csc_matrix(combined[google_kw].values)
+        X_infer_14 = hstack([X_text_14_infer, google_mat_14_infer]).tocsr()
+
+        model_14_infer = TrendPredictor(input_size=X_infer_14.shape[1], hidden_size=128, num_classes=2)
+        st_14 = torch.load("trend_predictor_14days.pth", weights_only=True)
+        model_14_infer.load_state_dict(st_14)
+        model_14_infer.eval()
+
+        feats_14_tensor = torch.tensor(X_infer_14.toarray(), dtype=torch.float32)
+        with torch.no_grad():
+            out_14 = model_14_infer(feats_14_tensor)
+            _, pred_14 = torch.max(out_14, dim=1)
+
+        combined['prediction_14days'] = pred_14.numpy()
+
+        # 4) Show predictions
+        trending_7 = combined[combined['prediction_7days'] == 1]
+        trending_14 = combined[combined['prediction_14days'] == 1]
+
+        print(f"\nTotal articles: {len(combined)}")
+        print(f"Predicted 1 for 7 Days: {len(trending_7)}")
+        print(f"Predicted 1 for 14 Days: {len(trending_14)}\n")
+
+        print("Trending Articles for 1 Week Later:")
+        print(trending_7[['date','title','topic_id','prediction_7days']])
+
+        print("\nTrending Articles for 2 Weeks Later:")
+        print(trending_14[['date','title','topic_id','prediction_14days']])
+
+# -------------------------------------------------------------------------
+# RUN SCRIPT
+# -------------------------------------------------------------------------
 if __name__ == "__main__":
     """
     Usage:
-      1) First run training (do_train=True):
+      1) Train:
+         python model.py --train
+      2) Inference:
          python model.py
-         # respond with the country code e.g. KR
-      2) Then run inference (do_train=False) to see if we get any 1 predictions:
-         # Modify main(do_train=False) or run with a command line param.
     """
-    # By default, let's do training in one run, or set do_train=False to skip training.
-    # Here we'll show do_train=True to replicate your steps in a single script.
-    main(do_train=False)
+    import argparse
 
-    # If you want to do inference only in a second run:
-    # main(do_train=False)
+    parser = argparse.ArgumentParser(description='Trend Predictor')
+    parser.add_argument('--train', action='store_true', help='Set to train the models')
+    args = parser.parse_args()
+
+    if args.train:
+        main(do_train=True)
+    else:
+        main(do_train=False)
