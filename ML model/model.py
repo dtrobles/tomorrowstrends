@@ -73,10 +73,10 @@ def collect_google_trends_data(start_date, end_date, country_codes, kw_list):
     return pd.DataFrame()  # Return empty so we do NOT use Google Trends
   
 
-def _gdelt_fetch_articles(query_str, start_dt, end_dt, max_pages=4):
+def _gdelt_fetch_articles(query_str, start_dt, end_dt, source_country, max_pages=4):
     """
     Helper function that fetches up to 250 * max_pages articles from GDELT
-    for the given query and date/time range.
+    for the given query, date/time range, and source country.
     Returns a list of articles or an empty list if error.
     """
     all_articles = []
@@ -91,7 +91,8 @@ def _gdelt_fetch_articles(query_str, start_dt, end_dt, max_pages=4):
             'sort': 'DateDesc',
             'startdatetime': start_dt.strftime("%Y%m%d%H%M%S"),
             'enddatetime': end_dt.strftime("%Y%m%d%H%M%S"),
-            'offset': page * 250  # Pagination offset
+            'offset': page * 250,  # Pagination offset
+            'sourcecountry': source_country  # Filter by source country
         }
 
         headers = {
@@ -117,24 +118,12 @@ def _gdelt_fetch_articles(query_str, start_dt, end_dt, max_pages=4):
 
     return all_articles
 
+
 def collect_gdelt_data_by_country(start_date, end_date, country_codes):
     """
-    Splits the total (start_date -> end_date) range into 3-day slices.
-    For each country, we:
-      1) Get the appropriate GDELT query string (from COUNTRY_QUERIES or fallback).
-      2) For each 3-day slice:
-         - Fetch up to 1000 articles (250 * 4 pages).
-         - Parse them.
-         - Sleep to respect rate limits.
-      3) Return a combined DataFrame of all articles.
+    Collect GDELT data by country code, filtering news by the source country.
     """
     all_articles = []
-
-    COUNTRY_QUERIES = {
-        'KR': "korea",
-        'JP': "japan OR 'japan news' OR 'japan economy' OR 'japan politics'",
-        # Add more if needed
-    }
 
     # 3-day windows
     date_slices = []
@@ -147,16 +136,14 @@ def collect_gdelt_data_by_country(start_date, end_date, country_codes):
         current_start = slice_end + timedelta(days=1)
 
     for code in country_codes:
-        query_str = COUNTRY_QUERIES.get(code.upper(), code)
         for (slice_start, slice_end) in date_slices:
             logging.info(f"GDELT fetch: {code} [{slice_start.strftime('%Y-%m-%d')} -> {slice_end.strftime('%Y-%m-%d')}]")
-            data = _gdelt_fetch_articles(query_str, slice_start, slice_end)
+            data = _gdelt_fetch_articles(query_str="news", start_dt=slice_start, end_dt=slice_end, source_country=code)
             if not data:
                 logging.warning(f"No data returned for {code} from {slice_start} to {slice_end}")
             else:
-                articles = data
-                logging.info(f"Fetched {len(articles)} articles from GDELT.")
-                for art in articles:
+                logging.info(f"Fetched {len(data)} articles from GDELT.")
+                for art in data:
                     pub_str = art.get('seendate')
                     try:
                         pub_date = datetime.strptime(pub_str, '%Y%m%dT%H%M%SZ').date() if pub_str else None
@@ -179,6 +166,7 @@ def collect_gdelt_data_by_country(start_date, end_date, country_codes):
     df = pd.DataFrame(all_articles)
     df.drop_duplicates(subset=['url'], inplace=True)
     return df
+
 
 # -------------------------------------------------------------------------
 # 2) PREPROCESS
@@ -218,7 +206,7 @@ def preprocess_news(df):
 # -------------------------------------------------------------------------
 # 3) CLUSTER MODEL (TOPIC)
 # -------------------------------------------------------------------------
-def train_cluster_model(df, n_clusters=10, cluster_vec_path='cluster_vectorizer.pkl', kmeans_path='kmeans_model.pkl'):
+def train_cluster_model(df, n_clusters, cluster_vec_path='cluster_vectorizer.pkl', kmeans_path='kmeans_model.pkl'):
     df = df.copy()
     cluster_vectorizer = TfidfVectorizer(max_features=3000)
     X_cluster = cluster_vectorizer.fit_transform(df['cleaned_text'])
@@ -248,20 +236,16 @@ def assign_topics(df, cluster_vec_path='cluster_vectorizer.pkl', kmeans_path='km
 # 4) LABEL TOPIC TRENDS (New Logic)
 # -------------------------------------------------------------------------
 def label_topic_trends(df, date_col='date', topic_col='topic_id',
-                       # We ignore google_cols now because we won't use them
                        coverage_1day=2,
-                       coverage_7day=4,
+                       coverage_7day=6,
                        coverage_14day=7
                        ):
     """
     Simple coverage-based logic only, ignoring Google Trends entirely.
     
     SHIFT=1 => coverage_1 >= coverage_1day
-               ( # of days a topic appeared in the last 3 days >= coverage_1day )
     SHIFT=7 => coverage_7 >= coverage_7day
-               ( # of days a topic appeared in the last 15 days >= coverage_7day )
     SHIFT=14 => coverage_14 >= coverage_14day
-                ( # of days a topic appeared in the last 30 days >= coverage_14day )
     """
     df = df.copy()
     df = df.sort_values(by=[topic_col, date_col])
@@ -287,31 +271,25 @@ def label_topic_trends(df, date_col='date', topic_col='topic_id',
             continue
         cur_date = d.date()
 
-        # SHIFT=1 => coverage in last 3 days
-        dates_1d = [(cur_date - timedelta(days=i)) for i in range(4, -1, -1)]
+        # SHIFT=1 => coverage in last 4 days
+        dates_1d = [(cur_date - timedelta(days=i)) for i in range(3, -1, -1)]
         coverage_1 = sum(day in coverage_map_sets[t] for day in dates_1d)
 
         # SHIFT=7 => coverage in last 15 days
-        dates_7d = [(cur_date - timedelta(days=i)) for i in range(14, -1, -1)]
+        dates_7d = [(cur_date - timedelta(days=i)) for i in range(15, -1, -1)]
         coverage_7 = sum(day in coverage_map_sets[t] for day in dates_7d)
 
         # SHIFT=14 => coverage in last 30 days
         dates_14d = [(cur_date - timedelta(days=i)) for i in range(29, -1, -1)]
         coverage_14 = sum(day in coverage_map_sets[t] for day in dates_14d)
 
-        # SHIFT=1
         if coverage_1 >= coverage_1day:
             df.at[idx, 'label_shift_1'] = 1
-
-        # SHIFT=7
         if coverage_7 >= coverage_7day:
             df.at[idx, 'label_shift_7'] = 1
-
-        # SHIFT=14
         if coverage_14 >= coverage_14day:
             df.at[idx, 'label_shift_14'] = 1
 
-    # Print label distributions
     for shift in [1, 7, 14]:
         col = f"label_shift_{shift}"
         c = df[col].value_counts().to_dict()
@@ -390,9 +368,7 @@ def main(do_train=True):
     end_date = datetime.now() - timedelta(days=1)
     start_date = end_date - timedelta(days=29)  # 30 days. Adjust as needed.
 
-    # google_kw = ['technology', 'economy', 'health', 'politics']  # <--- no longer used
     gdelt_file = "n_data.csv"
-    # trends_file = "g_data.csv"  # <--- not used now
 
     # ----------------------------------------------------------------
     # 1) Data Gathering / Loading
@@ -402,7 +378,7 @@ def main(do_train=True):
         n_data = pd.read_csv(gdelt_file)
         n_data['date'] = pd.to_datetime(n_data['date'], errors='coerce')
     else:
-        # We do NOT collect Google Trends
+        # We do NOT collect Google Trends (returns empty DF)
         # g_data = collect_google_trends_data(start_date, end_date, [country_code], google_kw)
         n_data = collect_gdelt_data_by_country(start_date, end_date, [country_code])
 
@@ -411,7 +387,6 @@ def main(do_train=True):
             return
 
         n_data.to_csv(gdelt_file, index=False)
-        # We do NOT save g_data, or we save it if you want, but it's not used
 
     n_data = preprocess_news(n_data)
     logging.info(f"After preprocess, n_data shape = {n_data.shape}")
@@ -434,7 +409,7 @@ def main(do_train=True):
             return
 
         # 2.1) Cluster the training data
-        train_data = train_cluster_model(train_data, n_clusters=10)
+        train_data = train_cluster_model(train_data, n_clusters=20)
 
         # 2.2) Label training data with coverage-only logic
         labeled_train = label_topic_trends(train_data)
@@ -442,16 +417,12 @@ def main(do_train=True):
         # 2.3) Vectorize ONLY the GDELT text for SHIFT=1
         vec_1day = TfidfVectorizer(max_features=3000)
         X_text_1 = vec_1day.fit_transform(labeled_train['cleaned_text'])
-        # Dump the vectorizer
         joblib.dump(vec_1day, "clf_vectorizer_1day.pkl")
 
-        # No Google Trends usage => we do NOT build an additional feature matrix
         X_1_final = X_text_1  # just text
         y_1_final = labeled_train['label_shift_1']
         c_1 = y_1_final.value_counts().to_dict()
-        logging.info(f"SHIFT=1 label distribution: {c_1}")
 
-        # Weighted CrossEntropy if imbalance
         c0_1 = c_1.get(0, 0)
         c1_1 = c_1.get(1, 0)
         if c0_1 == 0 or c1_1 == 0:
@@ -467,7 +438,7 @@ def main(do_train=True):
         crit_1 = nn.CrossEntropyLoss(weight=w_1_tensor)
         opt_1 = torch.optim.Adam(model_1.parameters(), lr=0.001)
 
-        print("\nTraining SHIFT=1 (Tomorrow) classifier:")
+        print(f"\nTraining SHIFT=1 classifier. SHIFT=1 label distribution: {c_1}")
         train_classifier(model_1, loader_1, crit_1, opt_1, epochs=10)
         torch.save(model_1.state_dict(), "trend_predictor_1day.pth")
 
@@ -479,7 +450,6 @@ def main(do_train=True):
         X_7_final = X_text_7
         y_7_final = labeled_train['label_shift_7']
         c_7 = y_7_final.value_counts().to_dict()
-        logging.info(f"SHIFT=7 label distribution: {c_7}")
 
         c0_7 = c_7.get(0, 0)
         c1_7 = c_7.get(1, 0)
@@ -496,7 +466,7 @@ def main(do_train=True):
         crit_7 = nn.CrossEntropyLoss(weight=w_7_tensor)
         opt_7 = torch.optim.Adam(model_7.parameters(), lr=0.001)
 
-        print("\nTraining SHIFT=7 classifier:")
+        print(f"\nTraining SHIFT=7 classifier. SHIFT=7 label distribution: {c_7}")
         train_classifier(model_7, loader_7, crit_7, opt_7, epochs=10)
         torch.save(model_7.state_dict(), "trend_predictor_7days.pth")
 
@@ -508,7 +478,6 @@ def main(do_train=True):
         X_14_final = X_text_14
         y_14_final = labeled_train['label_shift_14']
         c_14 = y_14_final.value_counts().to_dict()
-        logging.info(f"SHIFT=14 label distribution: {c_14}")
 
         c0_14 = c_14.get(0, 0)
         c1_14 = c_14.get(1, 0)
@@ -525,7 +494,7 @@ def main(do_train=True):
         crit_14 = nn.CrossEntropyLoss(weight=w_14_tensor)
         opt_14 = torch.optim.Adam(model_14.parameters(), lr=0.001)
 
-        print("\nTraining SHIFT=14 classifier:")
+        print(f"\nTraining SHIFT=14 classifier. SHIFT=14 label distribution: {c_14}")
         train_classifier(model_14, loader_14, crit_14, opt_14, epochs=10)
         torch.save(model_14.state_dict(), "trend_predictor_14days.pth")
 
@@ -542,7 +511,6 @@ def main(do_train=True):
         # Assign topics to the inference set using the trained cluster model
         inference_data = assign_topics(inference_data)
 
-        # We do NOT merge with google trends anymore
         combined_infer = inference_data.copy()
 
         # SHIFT=1 Inference
@@ -560,7 +528,7 @@ def main(do_train=True):
         feats_1 = torch.tensor(X_1_infer_text.toarray(), dtype=torch.float32)
         with torch.no_grad():
             out_1 = model_1_infer(feats_1)
-            probs_1 = torch.softmax(out_1, dim=1)[:,1].numpy()  # Probability of class=1
+            probs_1 = torch.softmax(out_1, dim=1)[:,1].numpy()
             _, pred_1 = torch.max(out_1, dim=1)
 
         combined_infer['prediction_1day'] = pred_1.numpy()
@@ -618,24 +586,19 @@ def main(do_train=True):
         print(f"Predicted trending (next week, SHIFT=7): {len(trending_7)}")
         print(f"Predicted trending (next 2 weeks, SHIFT=14): {len(trending_14)}\n")
 
-        # ----------------------------------------------------------------
-        # Finally, select top 5 articles for each window by probability
-        # ----------------------------------------------------------------
-        # SHIFT=1
+        # Top 5 articles for each window by probability
         trending_1_sorted = trending_1.sort_values(by='prob_1day', ascending=False)
         top_5_1 = trending_1_sorted.head(5)
         print(f"Out of {len(trending_1)} estimated trending articles for SHIFT=1, here are the top 5:")
         for i, row in top_5_1.iterrows():
             print(f"- {row['title']} (prob={row['prob_1day']:.4f})")
 
-        # SHIFT=7
         trending_7_sorted = trending_7.sort_values(by='prob_7days', ascending=False)
         top_5_7 = trending_7_sorted.head(5)
         print(f"\nOut of {len(trending_7)} estimated trending articles for SHIFT=7, here are the top 5:")
         for i, row in top_5_7.iterrows():
             print(f"- {row['title']} (prob={row['prob_7days']:.4f})")
 
-        # SHIFT=14
         trending_14_sorted = trending_14.sort_values(by='prob_14days', ascending=False)
         top_5_14 = trending_14_sorted.head(5)
         print(f"\nOut of {len(trending_14)} estimated trending articles for SHIFT=14, here are the top 5:")
