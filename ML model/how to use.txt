@@ -1,0 +1,8 @@
+Train (and store top-5) for a country, e.g. US:
+py model.py --country US
+
+If you only want to fetch data (skip training)
+python model.py --country US --no-train
+
+Show the top-5 predictions without re-running inference:
+py predict.py --country US

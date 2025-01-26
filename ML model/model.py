@@ -4,6 +4,7 @@ import time
 import logging
 import joblib
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import nltk
 import torch
@@ -11,15 +12,11 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-# from pytrends.request import TrendReq  # <--- commented out since we're not using it
-import requests  # for GDELT
+import requests
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
-from scipy.sparse import hstack, csc_matrix
 
 from dotenv import load_dotenv
-from pathlib import Path
-
 try:
     from langdetect import detect
 except ImportError:
@@ -34,154 +31,78 @@ env_path = Path('..') / '.env'
 load_dotenv(dotenv_path=env_path)
 
 # -------------------------------------------------------------------------
-# 1) DATA COLLECTION
+# FETCH ARTICLES
 # -------------------------------------------------------------------------
-# We keep the function definition in case you want it later, but we'll NOT call it.
-def collect_google_trends_data(start_date, end_date, country_codes, kw_list):
+def gdelt_fetch_articles_noquery_4weeks(country_code):
     """
-    Collect Google Trends data (currently not used).
+    Fetch articles from GDELT for each of the last 30 days, splitting
+    each day into 3 eight-hour windows. Each request fetches up to 250 articles.
     """
-    """
-    pytrends = TrendReq(tz=360)
-    all_data = pd.DataFrame()
-    date_range_list = pd.date_range(start=start_date, end=end_date, freq='D')
-
-    for country in country_codes:
-        for single_day in date_range_list:
-            timeframe = f"{single_day.strftime('%Y-%m-%d')} {single_day.strftime('%Y-%m-%d')}"
-            try:
-                pytrends.build_payload(kw_list, timeframe=timeframe, geo=country)
-                cdata = pytrends.interest_over_time()
-                if not cdata.empty:
-                    cdata['country'] = country
-                    all_data = pd.concat([all_data, cdata], ignore_index=False)
-            except Exception as e:
-                logging.warning(f"Trends error for {country} on {single_day}: {e}")
-                if "429" in str(e):
-                    logging.warning("Rate limit encountered. Sleeping 60s...")
-                    time.sleep(60)
-                continue
-
-    if not all_data.empty:
-        all_data.reset_index(inplace=True)
-        if 'Country' in all_data.columns:
-            all_data.rename(columns={'Country': 'country'}, inplace=True)
-        if 'isPartial' in all_data.columns:
-            all_data.drop(columns='isPartial', inplace=True, errors='ignore')
-    return all_data
-    """
-    return pd.DataFrame()  # Return empty so we do NOT use Google Trends
-  
-
-def _gdelt_fetch_articles(query_str, start_dt, end_dt, source_country, max_pages=4):
-    """
-    Helper function that fetches up to 250 * max_pages articles from GDELT
-    for the given query, date/time range, and source country.
-    Returns a list of articles or an empty list if error.
-    """
-    all_articles = []
     base_url = "http://api.gdeltproject.org/api/v2/doc/doc"
+    all_articles = []
+    now_utc = datetime.utcnow()
 
-    for page in range(max_pages):  # Fetch up to max_pages
-        params = {
-            'query': query_str,
-            'mode': 'artlist',
-            'format': 'json',
-            'maxrecords': '250',
-            'sort': 'DateDesc',
-            'startdatetime': start_dt.strftime("%Y%m%d%H%M%S"),
-            'enddatetime': end_dt.strftime("%Y%m%d%H%M%S"),
-            'offset': page * 250,  # Pagination offset
-            'sourcecountry': source_country  # Filter by source country
-        }
+    for i in range(30):
+        day_end = now_utc - timedelta(days=i)
+        day_start = day_end - timedelta(days=1)
 
-        headers = {
-            'User-Agent': 'MyGDELTScript/1.0'
-        }
+        chunk_windows = [
+            (day_start, day_start + timedelta(hours=8)),
+            (day_start + timedelta(hours=8), day_start + timedelta(hours=16)),
+            (day_start + timedelta(hours=16), day_end)
+        ]
 
-        try:
-            resp = requests.get(base_url, params=params, headers=headers)
-            if resp.status_code != 200:
-                logging.warning(f"GDELT error (status={resp.status_code}) query={query_str}: {resp.text}")
-                break  # Stop fetching more pages on error
-            data = resp.json()
-            articles = data.get('articles', [])
-            if not articles:
-                break  # No more articles to fetch
-            all_articles.extend(articles)
-        except Exception as e:
-            logging.warning(f"Exception during GDELT fetch for query={query_str}: {e}")
-            break
+        for chunk_idx, (st, en) in enumerate(chunk_windows, start=1):
+            start_str = st.strftime("%Y%m%d%H%M%S")
+            end_str = en.strftime("%Y%m%d%H%M%S")
 
-        # Sleep to respect GDELT rate limits
-        time.sleep(5)
+            params = {
+                'query': f'sourcecountry:{country_code}',
+                'mode': 'artlist',
+                'format': 'json',
+                'maxrecords': '250',
+                'sort': 'DateDesc',
+                'startdatetime': start_str,
+                'enddatetime': end_str,
+            }
+            headers = {'User-Agent': 'MyGDELTScript/1.0'}
+
+            try:
+                resp = requests.get(base_url, params=params, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    articles = data.get('articles', [])
+                    logging.info(f"[{country_code}] Day {i+1}, chunk {chunk_idx}/3:"
+                                 f" {start_str}->{end_str}, got {len(articles)} articles.")
+                    if not articles:
+                        continue
+                    all_articles.extend(articles)
+                else:
+                    logging.warning(f"GDELT error (status={resp.status_code}): {resp.text}")
+                    break
+            except Exception as e:
+                logging.warning(f"Exception during GDELT fetch: {e}")
+                break
+
+            time.sleep(5)
 
     return all_articles
 
-
-def collect_gdelt_data_by_country(start_date, end_date, country_codes):
-    """
-    Collect GDELT data by country code, filtering news by the source country.
-    """
-    all_articles = []
-
-    # 3-day windows
-    date_slices = []
-    current_start = start_date
-    while current_start <= end_date:
-        slice_end = current_start + timedelta(days=2)  # 3-day window
-        if slice_end > end_date:
-            slice_end = end_date
-        date_slices.append((current_start, slice_end))
-        current_start = slice_end + timedelta(days=1)
-
-    for code in country_codes:
-        for (slice_start, slice_end) in date_slices:
-            logging.info(f"GDELT fetch: {code} [{slice_start.strftime('%Y-%m-%d')} -> {slice_end.strftime('%Y-%m-%d')}]")
-            data = _gdelt_fetch_articles(query_str="news", start_dt=slice_start, end_dt=slice_end, source_country=code)
-            if not data:
-                logging.warning(f"No data returned for {code} from {slice_start} to {slice_end}")
-            else:
-                logging.info(f"Fetched {len(data)} articles from GDELT.")
-                for art in data:
-                    pub_str = art.get('seendate')
-                    try:
-                        pub_date = datetime.strptime(pub_str, '%Y%m%dT%H%M%SZ').date() if pub_str else None
-                    except ValueError:
-                        logging.warning(f"Failed to parse seendate: {pub_str}")
-                        pub_date = None
-
-                    all_articles.append({
-                        'country': code,
-                        'date': pub_date,
-                        'title': art.get('title', ''),
-                        'description': art.get('extrasummary', '') or art.get('snippet', ''),
-                        'source': art.get('domain', ''),
-                        'url': art.get('url', '')
-                    })
-
-            # Sleep to respect GDELT's suggestion ~1 request / 5 sec
-            time.sleep(5)
-
-    df = pd.DataFrame(all_articles)
-    df.drop_duplicates(subset=['url'], inplace=True)
-    return df
-
-
 # -------------------------------------------------------------------------
-# 2) PREPROCESS
+# PREPROCESS
 # -------------------------------------------------------------------------
 def clean_text(txt):
     if not isinstance(txt, str):
         return ""
-    txt = re.sub(r'http\S+|@\w+|#[^\s]+', '', txt)
-    txt = re.sub(r'[^A-Za-zÀ-ÖØ-öø-ÿ\s]', '', txt)
+    txt = re.sub(r'http\S+|@\w+|#[^\s]+', '', txt)  # remove URLs, mentions, hashtags
+    txt = re.sub(r'[^A-Za-zÀ-ÖØ-öø-ÿ\s]', '', txt)  # remove non-alpha except accented
     txt = txt.strip().lower()
 
+    # Language detection
     try:
         lng = detect(txt)
     except:
-        lng = 'en'
+        lng = 'en'  # default to English if detection fails
 
     nltk.download('stopwords', quiet=True)
     try:
@@ -191,6 +112,7 @@ def clean_text(txt):
 
     tokens = [w for w in txt.split() if w not in sw]
     return ' '.join(tokens)
+
 
 def preprocess_news(df):
     df = df.copy()
@@ -204,22 +126,23 @@ def preprocess_news(df):
     return df
 
 # -------------------------------------------------------------------------
-# 3) CLUSTER MODEL (TOPIC)
+# CLUSTER MODEL (TOPIC)
 # -------------------------------------------------------------------------
-def train_cluster_model(df, n_clusters, cluster_vec_path='cluster_vectorizer.pkl', kmeans_path='kmeans_model.pkl'):
+def train_cluster_model(df, n_clusters,
+                        cluster_vec_path,
+                        kmeans_path):
     df = df.copy()
     cluster_vectorizer = TfidfVectorizer(max_features=3000)
     X_cluster = cluster_vectorizer.fit_transform(df['cleaned_text'])
 
     kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    df.loc[:, 'topic_id'] = kmeans.fit_predict(X_cluster)
+    df['topic_id'] = kmeans.fit_predict(X_cluster)
 
     joblib.dump(cluster_vectorizer, cluster_vec_path)
     joblib.dump(kmeans, kmeans_path)
-
     return df
 
-def assign_topics(df, cluster_vec_path='cluster_vectorizer.pkl', kmeans_path='kmeans_model.pkl'):
+def assign_topics(df, cluster_vec_path, kmeans_path):
     if not os.path.exists(cluster_vec_path) or not os.path.exists(kmeans_path):
         logging.error("No trained cluster model found! Please train first.")
         return df
@@ -227,37 +150,26 @@ def assign_topics(df, cluster_vec_path='cluster_vectorizer.pkl', kmeans_path='km
     df = df.copy()
     cluster_vectorizer = joblib.load(cluster_vec_path)
     kmeans = joblib.load(kmeans_path)
-
     X = cluster_vectorizer.transform(df['cleaned_text'])
-    df.loc[:, 'topic_id'] = kmeans.predict(X)
+    df['topic_id'] = kmeans.predict(X)
     return df
 
 # -------------------------------------------------------------------------
-# 4) LABEL TOPIC TRENDS (New Logic)
+# LABEL TOPIC TRENDS
 # -------------------------------------------------------------------------
 def label_topic_trends(df, date_col='date', topic_col='topic_id',
-                       coverage_1day=2,
-                       coverage_7day=6,
-                       coverage_14day=7
-                       ):
-    """
-    Simple coverage-based logic only, ignoring Google Trends entirely.
-    
-    SHIFT=1 => coverage_1 >= coverage_1day
-    SHIFT=7 => coverage_7 >= coverage_7day
-    SHIFT=14 => coverage_14 >= coverage_14day
-    """
+                       coverage_1day=10,
+                       coverage_7day=15,
+                       coverage_14day=19):
     df = df.copy()
     df = df.sort_values(by=[topic_col, date_col])
 
-    # Group by topic => set of unique days
     coverage_map = {}
     grouped = df.groupby(topic_col)[date_col]
     for t, dates_series in grouped:
         unique_dates = sorted(list(set(dates_series.dropna().dt.date)))
         coverage_map[t] = unique_dates
 
-    # Prepare label columns
     df['label_shift_1'] = 0
     df['label_shift_7'] = 0
     df['label_shift_14'] = 0
@@ -271,8 +183,8 @@ def label_topic_trends(df, date_col='date', topic_col='topic_id',
             continue
         cur_date = d.date()
 
-        # SHIFT=1 => coverage in last 4 days
-        dates_1d = [(cur_date - timedelta(days=i)) for i in range(3, -1, -1)]
+        # SHIFT=1 => coverage in last 10 days
+        dates_1d = [(cur_date - timedelta(days=i)) for i in range(10, -1, -1)]
         coverage_1 = sum(day in coverage_map_sets[t] for day in dates_1d)
 
         # SHIFT=7 => coverage in last 15 days
@@ -298,9 +210,9 @@ def label_topic_trends(df, date_col='date', topic_col='topic_id',
     return df
 
 # -------------------------------------------------------------------------
-# 5) DATASET
+# DATASET
 # -------------------------------------------------------------------------
-class TrendDataset(Dataset):
+class TrendDataset(torch.utils.data.Dataset):
     def __init__(self, X, y):
         self.X = X
         self.y = y.values
@@ -313,7 +225,7 @@ class TrendDataset(Dataset):
         return row_x, torch.tensor(self.y[idx], dtype=torch.long)
 
 # -------------------------------------------------------------------------
-# 6) CLASSIFIER
+# CLASSIFIER
 # -------------------------------------------------------------------------
 class TrendPredictor(nn.Module):
     def __init__(self, input_size, hidden_size=128, num_classes=2):
@@ -328,7 +240,7 @@ class TrendPredictor(nn.Module):
         return self.fc(x)
 
 # -------------------------------------------------------------------------
-# 7) TRAINING LOOP
+# TRAINING LOOP
 # -------------------------------------------------------------------------
 def train_classifier(model, loader, criterion, optimizer, epochs=5):
     for epoch in range(epochs):
@@ -344,7 +256,6 @@ def train_classifier(model, loader, criterion, optimizer, epochs=5):
             optimizer.step()
             total_loss += loss.item()
 
-            # Accuracy tracking
             _, predicted = torch.max(out.data, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
@@ -354,265 +265,190 @@ def train_classifier(model, loader, criterion, optimizer, epochs=5):
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {avg_loss:.4f}, Accuracy: {accuracy:.2f}%")
 
 # -------------------------------------------------------------------------
-# MAIN
+# TRAIN + (OPTIONALLY) INFERENCE -> STORES TOP-5
 # -------------------------------------------------------------------------
-def main(do_train=True):
+def train_for_country(country_code, do_train=True):
     """
-    We'll collect 30+ days of GDELT data once, then split into:
-      - Train subset: older portion
-      - Inference subset: last ~7 days
-    SHIFT labeling: 1-day, 7-day, 14-day windows (backward logic).
+    1) Load or fetch data for given country_code => data/{country_code}_data.csv
+    2) If do_train, cluster + label + train SHIFT=1/7/14 models
+    3) Then do an inference pass on the last 7 days to get top-5 articles
+       for each SHIFT -> store to data/{country_code}_top5.csv
     """
-    country_code = input("Enter the 2-letter country code (e.g. 'KR'): ").strip().upper()
-
+    os.makedirs("data", exist_ok=True)
+    gdelt_file = f"data/{country_code}_data.csv"
     end_date = datetime.now() - timedelta(days=1)
-    start_date = end_date - timedelta(days=29)  # 30 days. Adjust as needed.
+    start_date = end_date - timedelta(days=29)
 
-    gdelt_file = "n_data.csv"
-
-    # ----------------------------------------------------------------
-    # 1) Data Gathering / Loading
-    # ----------------------------------------------------------------
+    # ---------------------- LOAD or FETCH -----------------------------
     if os.path.exists(gdelt_file):
-        logging.info(f"Loading cached GDELT data from {gdelt_file}")
+        logging.info(f"[{country_code}] Loading cached data from {gdelt_file}")
         n_data = pd.read_csv(gdelt_file)
         n_data['date'] = pd.to_datetime(n_data['date'], errors='coerce')
     else:
-        # We do NOT collect Google Trends (returns empty DF)
-        # g_data = collect_google_trends_data(start_date, end_date, [country_code], google_kw)
-        n_data = collect_gdelt_data_by_country(start_date, end_date, [country_code])
-
-        if n_data.empty:
-            logging.error("No GDELT data returned. Exiting.")
+        articles = gdelt_fetch_articles_noquery_4weeks(country_code)
+        if not articles:
+            logging.error(f"[{country_code}] No GDELT data returned. Exiting.")
             return
 
+        all_records = []
+        for art in articles:
+            pub_str = art.get('seendate')
+            try:
+                pub_date = datetime.strptime(pub_str, '%Y%m%dT%H%M%SZ').date() if pub_str else None
+            except ValueError:
+                pub_date = None
+            all_records.append({
+                'country': country_code,
+                'date': pub_date,
+                'title': art.get('title', ''),
+                'description': art.get('extrasummary', '') or art.get('snippet', ''),
+                'source': art.get('domain', ''),
+                'url': art.get('url', '')
+            })
+
+        n_data = pd.DataFrame(all_records)
+        n_data.drop_duplicates(subset=['url'], inplace=True)
         n_data.to_csv(gdelt_file, index=False)
+        logging.info(f"[{country_code}] Fetched data saved to {gdelt_file}")
 
+    # ---------------------- PREPROCESS -----------------------------
     n_data = preprocess_news(n_data)
-    logging.info(f"After preprocess, n_data shape = {n_data.shape}")
+    logging.info(f"[{country_code}] After preprocess, shape = {n_data.shape}")
 
-    missing_dates = n_data['date'].isna().sum()
-    logging.info(f"Number of articles with missing dates: {missing_dates}")
-
-    cutoff_date = end_date - timedelta(days=6)  # last ~7 days
+    cutoff_date = end_date - timedelta(days=6)
     train_data = n_data[n_data['date'] < cutoff_date].copy()
     inference_data = n_data[n_data['date'] >= cutoff_date].copy()
 
-    logging.info(f"Train data shape = {train_data.shape}, Inference data shape = {inference_data.shape}")
+    logging.info(f"[{country_code}] Train data shape={train_data.shape}; Inference shape={inference_data.shape}")
 
-    # ----------------------------------------------------------------
-    # 2) Training
-    # ----------------------------------------------------------------
+    # ---------------------- TRAIN -----------------------------
     if do_train:
         if train_data.empty:
-            logging.error("No data in the training subset. Exiting.")
+            logging.error(f"[{country_code}] No data for training subset. Exiting.")
             return
 
-        # 2.1) Cluster the training data
-        train_data = train_cluster_model(train_data, n_clusters=20)
+        # 1) Cluster
+        cluster_vec_path = f"data/cluster_vectorizer_{country_code}.pkl"
+        kmeans_path = f"data/kmeans_model_{country_code}.pkl"
+        train_data = train_cluster_model(train_data, 180, cluster_vec_path, kmeans_path)
 
-        # 2.2) Label training data with coverage-only logic
+        # 2) Label
         labeled_train = label_topic_trends(train_data)
 
-        # 2.3) Vectorize ONLY the GDELT text for SHIFT=1
-        vec_1day = TfidfVectorizer(max_features=3000)
-        X_text_1 = vec_1day.fit_transform(labeled_train['cleaned_text'])
-        joblib.dump(vec_1day, "clf_vectorizer_1day.pkl")
+        # 3) Train SHIFT=1,7,14
+        for shift_day in [1,7,14]:
+            label_col = f"label_shift_{shift_day}"
+            vec_path = f"data/clf_vectorizer_{shift_day}days_{country_code}.pkl"
+            model_path = f"data/trend_predictor_{shift_day}days_{country_code}.pth"
 
-        X_1_final = X_text_1  # just text
-        y_1_final = labeled_train['label_shift_1']
-        c_1 = y_1_final.value_counts().to_dict()
+            vec = TfidfVectorizer(max_features=3000)
+            X_text = vec.fit_transform(labeled_train['cleaned_text'])
+            joblib.dump(vec, vec_path)
 
-        c0_1 = c_1.get(0, 0)
-        c1_1 = c_1.get(1, 0)
-        if c0_1 == 0 or c1_1 == 0:
-            w_1 = 1.0
-        else:
-            w_1 = float(c0_1) / float(c1_1)
-        w_1_tensor = torch.tensor([1.0, w_1], dtype=torch.float32)
+            y_final = labeled_train[label_col]
+            c_dist = y_final.value_counts().to_dict()
+            c0 = c_dist.get(0, 0)
+            c1 = c_dist.get(1, 0)
+            if c0 == 0 or c1 == 0:
+                w = 1.0
+            else:
+                w = float(c0) / float(c1)
+            w_tensor = torch.tensor([1.0, w], dtype=torch.float32)
 
-        ds_1 = TrendDataset(X_1_final, y_1_final)
-        loader_1 = DataLoader(ds_1, batch_size=32, shuffle=True)
+            ds = TrendDataset(X_text, y_final)
+            loader = DataLoader(ds, batch_size=32, shuffle=True)
 
-        model_1 = TrendPredictor(input_size=X_1_final.shape[1], hidden_size=128, num_classes=2)
-        crit_1 = nn.CrossEntropyLoss(weight=w_1_tensor)
-        opt_1 = torch.optim.Adam(model_1.parameters(), lr=0.001)
+            model = TrendPredictor(input_size=X_text.shape[1], hidden_size=128, num_classes=2)
+            crit = nn.CrossEntropyLoss(weight=w_tensor)
+            opt = torch.optim.Adam(model.parameters(), lr=0.001)
 
-        print(f"\nTraining SHIFT=1 classifier. SHIFT=1 label distribution: {c_1}")
-        train_classifier(model_1, loader_1, crit_1, opt_1, epochs=10)
-        torch.save(model_1.state_dict(), "trend_predictor_1day.pth")
+            print(f"\n[{country_code}] Training SHIFT={shift_day} classifier. Distribution: {c_dist}")
+            train_classifier(model, loader, crit, opt, epochs=10)
+            torch.save(model.state_dict(), model_path)
 
-        # SHIFT=7
-        vec_7 = TfidfVectorizer(max_features=3000)
-        X_text_7 = vec_7.fit_transform(labeled_train['cleaned_text'])
-        joblib.dump(vec_7, "clf_vectorizer_7days.pkl")
+        logging.info(f"[{country_code}] Finished training SHIFT=1,7,14 models.")
 
-        X_7_final = X_text_7
-        y_7_final = labeled_train['label_shift_7']
-        c_7 = y_7_final.value_counts().to_dict()
-
-        c0_7 = c_7.get(0, 0)
-        c1_7 = c_7.get(1, 0)
-        if c0_7 == 0 or c1_7 == 0:
-            w_7 = 1.0
-        else:
-            w_7 = float(c0_7) / float(c1_7)
-        w_7_tensor = torch.tensor([1.0, w_7], dtype=torch.float32)
-
-        ds_7 = TrendDataset(X_7_final, y_7_final)
-        loader_7 = DataLoader(ds_7, batch_size=32, shuffle=True)
-
-        model_7 = TrendPredictor(input_size=X_7_final.shape[1], hidden_size=128, num_classes=2)
-        crit_7 = nn.CrossEntropyLoss(weight=w_7_tensor)
-        opt_7 = torch.optim.Adam(model_7.parameters(), lr=0.001)
-
-        print(f"\nTraining SHIFT=7 classifier. SHIFT=7 label distribution: {c_7}")
-        train_classifier(model_7, loader_7, crit_7, opt_7, epochs=10)
-        torch.save(model_7.state_dict(), "trend_predictor_7days.pth")
-
-        # SHIFT=14
-        vec_14 = TfidfVectorizer(max_features=3000)
-        X_text_14 = vec_14.fit_transform(labeled_train['cleaned_text'])
-        joblib.dump(vec_14, "clf_vectorizer_14days.pkl")
-
-        X_14_final = X_text_14
-        y_14_final = labeled_train['label_shift_14']
-        c_14 = y_14_final.value_counts().to_dict()
-
-        c0_14 = c_14.get(0, 0)
-        c1_14 = c_14.get(1, 0)
-        if c0_14 == 0 or c1_14 == 0:
-            w_14 = 1.0
-        else:
-            w_14 = float(c0_14) / float(c1_14)
-        w_14_tensor = torch.tensor([1.0, w_14], dtype=torch.float32)
-
-        ds_14 = TrendDataset(X_14_final, y_14_final)
-        loader_14 = DataLoader(ds_14, batch_size=32, shuffle=True)
-
-        model_14 = TrendPredictor(input_size=X_14_final.shape[1], hidden_size=128, num_classes=2)
-        crit_14 = nn.CrossEntropyLoss(weight=w_14_tensor)
-        opt_14 = torch.optim.Adam(model_14.parameters(), lr=0.001)
-
-        print(f"\nTraining SHIFT=14 classifier. SHIFT=14 label distribution: {c_14}")
-        train_classifier(model_14, loader_14, crit_14, opt_14, epochs=10)
-        torch.save(model_14.state_dict(), "trend_predictor_14days.pth")
-
-        logging.info("Finished training. Models for shift=1,7,14 saved.")
-
-    else:
-        # ----------------------------------------------------------------
-        # INFERENCE on the last ~7 days of data
-        # ----------------------------------------------------------------
-        if inference_data.empty:
-            logging.warning("No data in the last 7 days. Nothing to predict.")
+    # ---------------------- INFERENCE (last 7 days) + TOP 5 STORAGE -----------------------------
+    if not inference_data.empty:
+        # 1) Assign topics (KMeans)
+        cluster_vec_path = f"data/cluster_vectorizer_{country_code}.pkl"
+        kmeans_path = f"data/kmeans_model_{country_code}.pkl"
+        inference_data = assign_topics(inference_data, cluster_vec_path, kmeans_path)
+        if 'topic_id' not in inference_data.columns:
+            logging.warning(f"[{country_code}] Could not assign topics. Skipping top-5.")
             return
-
-        # Assign topics to the inference set using the trained cluster model
-        inference_data = assign_topics(inference_data)
 
         combined_infer = inference_data.copy()
 
-        # SHIFT=1 Inference
-        if not os.path.exists("clf_vectorizer_1day.pkl") or not os.path.exists("trend_predictor_1day.pth"):
-            logging.error("1-day model files not found. Please train first.")
-            return
-        vec_1day = joblib.load("clf_vectorizer_1day.pkl")
-        X_1_infer_text = vec_1day.transform(combined_infer['cleaned_text'])
+        # 2) Predict SHIFT=1,7,14
+        for shift_day in [1,7,14]:
+            vec_path = f"data/clf_vectorizer_{shift_day}days_{country_code}.pkl"
+            model_path = f"data/trend_predictor_{shift_day}days_{country_code}.pth"
 
-        model_1_infer = TrendPredictor(input_size=X_1_infer_text.shape[1], hidden_size=128, num_classes=2)
-        st_1 = torch.load("trend_predictor_1day.pth")
-        model_1_infer.load_state_dict(st_1)
-        model_1_infer.eval()
+            if not os.path.exists(vec_path) or not os.path.exists(model_path):
+                logging.warning(f"[{country_code}] Missing SHIFT={shift_day} model. Skipping.")
+                continue
 
-        feats_1 = torch.tensor(X_1_infer_text.toarray(), dtype=torch.float32)
-        with torch.no_grad():
-            out_1 = model_1_infer(feats_1)
-            probs_1 = torch.softmax(out_1, dim=1)[:,1].numpy()
-            _, pred_1 = torch.max(out_1, dim=1)
+            vec = joblib.load(vec_path)
+            X_infer_text = vec.transform(combined_infer['cleaned_text'])
 
-        combined_infer['prediction_1day'] = pred_1.numpy()
-        combined_infer['prob_1day'] = probs_1
+            model_infer = TrendPredictor(input_size=X_infer_text.shape[1], hidden_size=128, num_classes=2)
+            st = torch.load(model_path)
+            model_infer.load_state_dict(st)
+            model_infer.eval()
 
-        # SHIFT=7 Inference
-        if not os.path.exists("clf_vectorizer_7days.pkl") or not os.path.exists("trend_predictor_7days.pth"):
-            logging.error("7-day model files not found. Please train first.")
-            return
-        vec_7 = joblib.load("clf_vectorizer_7days.pkl")
-        X_7_infer_text = vec_7.transform(combined_infer['cleaned_text'])
+            feats = torch.tensor(X_infer_text.toarray(), dtype=torch.float32)
+            with torch.no_grad():
+                out = model_infer(feats)
+                probs = torch.softmax(out, dim=1)[:, 1].numpy()
+                _, pred = torch.max(out, dim=1)
 
-        model_7_infer = TrendPredictor(input_size=X_7_infer_text.shape[1], hidden_size=128, num_classes=2)
-        st_7 = torch.load("trend_predictor_7days.pth")
-        model_7_infer.load_state_dict(st_7)
-        model_7_infer.eval()
+            pred_col = f'prediction_{shift_day}days'
+            prob_col = f'prob_{shift_day}days'
+            combined_infer[pred_col] = pred.numpy()
+            combined_infer[prob_col] = probs
 
-        feats_7 = torch.tensor(X_7_infer_text.toarray(), dtype=torch.float32)
-        with torch.no_grad():
-            out_7 = model_7_infer(feats_7)
-            probs_7 = torch.softmax(out_7, dim=1)[:,1].numpy()
-            _, pred_7 = torch.max(out_7, dim=1)
+        # 3) Extract top-5 for each SHIFT and store in CSV
+        all_top5 = []
+        for shift_day in [1,7,14]:
+            pred_col = f'prediction_{shift_day}days'
+            prob_col = f'prob_{shift_day}days'
+            if pred_col not in combined_infer.columns:
+                continue
 
-        combined_infer['prediction_7days'] = pred_7.numpy()
-        combined_infer['prob_7days'] = probs_7
+            trending = combined_infer[combined_infer[pred_col] == 1]
+            if trending.empty:
+                continue
+            trending_sorted = trending.sort_values(by=prob_col, ascending=False)
+            top5 = trending_sorted.head(5)
 
-        # SHIFT=14 Inference
-        if not os.path.exists("clf_vectorizer_14days.pkl") or not os.path.exists("trend_predictor_14days.pth"):
-            logging.error("14-day model files not found. Please train first.")
-            return
-        vec_14 = joblib.load("clf_vectorizer_14days.pkl")
-        X_14_infer_text = vec_14.transform(combined_infer['cleaned_text'])
+            for _, row in top5.iterrows():
+                all_top5.append({
+                    'shift': shift_day,
+                    'date': row['date'],
+                    'title': row['title'],
+                    'prob': row[prob_col],
+                    'url': row['url']
+                })
 
-        model_14_infer = TrendPredictor(input_size=X_14_infer_text.shape[1], hidden_size=128, num_classes=2)
-        st_14 = torch.load("trend_predictor_14days.pth")
-        model_14_infer.load_state_dict(st_14)
-        model_14_infer.eval()
-
-        feats_14 = torch.tensor(X_14_infer_text.toarray(), dtype=torch.float32)
-        with torch.no_grad():
-            out_14 = model_14_infer(feats_14)
-            probs_14 = torch.softmax(out_14, dim=1)[:,1].numpy()
-            _, pred_14 = torch.max(out_14, dim=1)
-
-        combined_infer['prediction_14days'] = pred_14.numpy()
-        combined_infer['prob_14days'] = probs_14
-
-        # Show overall counts
-        trending_1 = combined_infer[combined_infer['prediction_1day'] == 1]
-        trending_7 = combined_infer[combined_infer['prediction_7days'] == 1]
-        trending_14 = combined_infer[combined_infer['prediction_14days'] == 1]
-
-        print(f"\nTotal articles in last 7 days: {len(combined_infer)}")
-        print(f"Predicted trending (tomorrow, SHIFT=1): {len(trending_1)}")
-        print(f"Predicted trending (next week, SHIFT=7): {len(trending_7)}")
-        print(f"Predicted trending (next 2 weeks, SHIFT=14): {len(trending_14)}\n")
-
-        # Top 5 articles for each window by probability
-        trending_1_sorted = trending_1.sort_values(by='prob_1day', ascending=False)
-        top_5_1 = trending_1_sorted.head(5)
-        print(f"Out of {len(trending_1)} estimated trending articles for SHIFT=1, here are the top 5:")
-        for i, row in top_5_1.iterrows():
-            print(f"- {row['title']} (prob={row['prob_1day']:.4f})")
-
-        trending_7_sorted = trending_7.sort_values(by='prob_7days', ascending=False)
-        top_5_7 = trending_7_sorted.head(5)
-        print(f"\nOut of {len(trending_7)} estimated trending articles for SHIFT=7, here are the top 5:")
-        for i, row in top_5_7.iterrows():
-            print(f"- {row['title']} (prob={row['prob_7days']:.4f})")
-
-        trending_14_sorted = trending_14.sort_values(by='prob_14days', ascending=False)
-        top_5_14 = trending_14_sorted.head(5)
-        print(f"\nOut of {len(trending_14)} estimated trending articles for SHIFT=14, here are the top 5:")
-        for i, row in top_5_14.iterrows():
-            print(f"- {row['title']} (prob={row['prob_14days']:.4f})")
+        if all_top5:
+            top5_df = pd.DataFrame(all_top5)
+            out_file = f"data/{country_code}_top5.csv"
+            top5_df.to_csv(out_file, index=False)
+            logging.info(f"[{country_code}] Stored top-5 predictions to {out_file}")
+        else:
+            logging.info(f"[{country_code}] No articles predicted as trending. No top-5 stored.")
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Trend Predictor with SHIFT=1,7,14 (GDELT only)')
-    parser.add_argument('--train', action='store_true', help='Train the models')
+    parser = argparse.ArgumentParser(
+        description='Train TrendPredictor for a given country code, then store top-5 predictions.'
+    )
+    parser.add_argument('--country', type=str, required=True,
+                        help='2-letter country code (e.g. US, JA)')
+    parser.add_argument('--no-train', action='store_true',
+                        help='Fetch data but skip training (still do top-5 inference if models exist)')
     args = parser.parse_args()
 
-    if args.train:
-        main(do_train=True)
-    else:
-        main(do_train=False)
+    train_for_country(args.country, do_train=not args.no_train)
