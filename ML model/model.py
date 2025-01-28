@@ -221,7 +221,7 @@ def assign_topics(df, cluster_vec_path, kmeans_path):
 # LABEL TOPIC TRENDS
 # -------------------------------------------------------------------------
 def label_topic_trends(df, date_col='date', topic_col='topic_id',
-                       coverage_1day=10,
+                       coverage_1day=3,
                        coverage_7day=15,
                        coverage_14day=19):
     df = df.copy()
@@ -241,13 +241,13 @@ def label_topic_trends(df, date_col='date', topic_col='topic_id',
 
     for idx, row in df.iterrows():
         t = row[topic_col]
-        d = row[date_col]
+        d = row['date']
         if pd.isnull(d):
             continue
         cur_date = d.date()
 
         # SHIFT=1 => coverage in last 10 days
-        dates_1d = [(cur_date - timedelta(days=i)) for i in range(10, -1, -1)]
+        dates_1d = [(cur_date - timedelta(days=i)) for i in range(3, -1, -1)]
         coverage_1 = sum(day in coverage_map_sets[t] for day in dates_1d)
 
         # SHIFT=7 => coverage in last 15 days
@@ -332,6 +332,30 @@ def train_classifier(model, loader, criterion, optimizer, epochs=5):
 
 
 # -------------------------------------------------------------------------
+# FUNCTION TO EXTRACT TOP TERMS PER TOPIC
+# -------------------------------------------------------------------------
+def get_top_terms_per_topic(cluster_vectorizer, kmeans, n_terms=10):
+    """
+    Extract top terms for each cluster (topic) based on cluster centers.
+
+    Args:
+        cluster_vectorizer (TfidfVectorizer): The vectorizer used for clustering.
+        kmeans (KMeans): The trained KMeans model.
+        n_terms (int): Number of top terms to extract per topic.
+
+    Returns:
+        dict: Mapping from topic_id to list of top terms.
+    """
+    feature_names = cluster_vectorizer.get_feature_names_out()
+    top_terms = {}
+    for i in range(kmeans.n_clusters):
+        center = kmeans.cluster_centers_[i]
+        top_indices = center.argsort()[::-1][:n_terms]
+        top_terms[i] = [feature_names[idx] for idx in top_indices]
+    return top_terms
+
+
+# -------------------------------------------------------------------------
 # MAIN FUNCTION
 # -------------------------------------------------------------------------
 def train_for_country(country_code, do_train=True):
@@ -341,6 +365,7 @@ def train_for_country(country_code, do_train=True):
     3) Save updated CSV (deduplicating on 'url').
     4) If do_train, do the usual cluster+label+train steps.
     5) Then do an inference step on the last 7 days => save top-5 to data/{country_code}_top5.csv
+    6) Print trending topics to the console.
     """
     os.makedirs("data", exist_ok=True)
     gdelt_file = f"data/{country_code}_data.csv"
@@ -420,6 +445,12 @@ def train_for_country(country_code, do_train=True):
     n_data = preprocess_news(n_data)
     logging.info(f"[{country_code}] After preprocess, shape={n_data.shape}")
 
+    # 3) Save the preprocessed data to CSV
+    # This will overwrite the existing CSV to include 'cleaned_text' and other processed columns
+    # If you prefer to keep raw and processed data separate, consider saving to a different file
+    n_data.to_csv(gdelt_file, index=False)
+    logging.info(f"[{country_code}] Updated CSV after preprocessing: {gdelt_file}")
+
     # Split into train vs. last 7 days
     end_date = datetime.now() - timedelta(days=1)
     cutoff_date = end_date - timedelta(days=6)
@@ -445,7 +476,7 @@ def train_for_country(country_code, do_train=True):
             labeled_train = label_topic_trends(train_data)
 
             # 3) Train SHIFT=1,7,14
-            for shift_day in [1,7,14]:
+            for shift_day in [1, 7, 14]:
                 label_col = f"label_shift_{shift_day}"
                 vec_path = f"data/clf_vectorizer_{shift_day}days_{country_code}.pkl"
                 model_path = f"data/trend_predictor_{shift_day}days_{country_code}.pth"
@@ -495,7 +526,7 @@ def train_for_country(country_code, do_train=True):
     combined_infer = inference_data.copy()
 
     # SHIFT=1,7,14 predictions
-    for shift_day in [1,7,14]:
+    for shift_day in [1, 7, 14]:
         vec_path = f"data/clf_vectorizer_{shift_day}days_{country_code}.pkl"
         model_path = f"data/trend_predictor_{shift_day}days_{country_code}.pth"
         if not os.path.exists(vec_path) or not os.path.exists(model_path):
@@ -521,9 +552,21 @@ def train_for_country(country_code, do_train=True):
         combined_infer[pred_col] = pred.numpy()
         combined_infer[prob_col] = probs
 
+    # ---------------------------------------------------------------------
+    # EXTRACT TOP TERMS FOR EACH TOPIC
+    # ---------------------------------------------------------------------
+    # Load the cluster models
+    cluster_vectorizer = joblib.load(cluster_vec_path)
+    kmeans = joblib.load(kmeans_path)
+    top_terms = get_top_terms_per_topic(cluster_vectorizer, kmeans, n_terms=10)
+
+    # ---------------------------------------------------------------------
     # Gather top-5 from each SHIFT
+    # ---------------------------------------------------------------------
     all_top5 = []
-    for shift_day in [1,7,14]:
+    trending_topics = {1: set(), 7: set(), 14: set()}  # To store trending topic_ids per shift
+
+    for shift_day in [1, 7, 14]:
         pred_col = f'prediction_{shift_day}days'
         prob_col = f'prob_{shift_day}days'
         if pred_col not in combined_infer.columns:
@@ -540,8 +583,10 @@ def train_for_country(country_code, do_train=True):
                 'date': row['date'],
                 'title': row['title'],
                 'prob': row[prob_col],
-                'url': row['url']
+                'url': row['url'],
+                'topic_id': row['topic_id']
             })
+            trending_topics[shift_day].add(row['topic_id'])
 
     if all_top5:
         top5_df = pd.DataFrame(all_top5)
@@ -550,6 +595,20 @@ def train_for_country(country_code, do_train=True):
         logging.info(f"[{country_code}] Stored top-5 predictions to {out_file}")
     else:
         logging.info(f"[{country_code}] No articles predicted as trending. No top-5 stored.")
+
+    # ---------------------------------------------------------------------
+    # PRINT TRENDING TOPICS TO CONSOLE
+    # ---------------------------------------------------------------------
+    for shift_day, topics in trending_topics.items():
+        if not topics:
+            logging.info(f"[{country_code}] No trending topics detected for SHIFT={shift_day} days.")
+            continue
+        print(f"\nTrending Topics for SHIFT={shift_day} days:")
+        for topic_id in topics:
+            terms = top_terms.get(topic_id, [])
+            terms_str = ", ".join(terms)
+            print(f"  - Topic ID {topic_id}: {terms_str}")
+    print("\n")  # Add extra newline for readability
 
 
 if __name__ == "__main__":
