@@ -1,0 +1,80 @@
+@font-face {
+    font-family: 'Emulogic';
+    src: url('/src/assets/fonts/Emulogic.ttf') format('truetype');
+  }
+  
+  .map-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background-color: #0D1017;
+    color: white;
+    height: 100vh;
+  }
+  
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: relative; /* Added for absolute positioning of the title */
+    width: 100%;
+    padding: 1% 2%;
+    box-sizing: border-box;
+  }
+  
+  .title {
+    font-family: 'Emulogic', sans-serif;
+    font-size: 2.5rem;
+    color: orange;
+    flex-grow: 1;
+    position: absolute;   /* Position the title absolutely */
+    left: 50%;            /* Center horizontally relative to the header */
+    transform: translateX(-50%); /* Offset the title by half its width to truly center it */
+    text-align: center;   /* Ensure text within is centered */
+  }
+  
+  .date {
+    font-size: 1rem;
+    color: #e0e0e0;
+    background-color: #333;
+    padding: 5px 10px;
+    border-radius: 5px;
+  }
+  
+  .about-button {
+    margin-right: auto;
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    background-color: #0D1017;
+  }
+  
+  .about {
+    font-size: 0.8rem;
+    font-family: 'Emulogic', sans-serif;
+    padding: 1% 2%;
+    border: 2px solid #FEFFFF;
+    background-color: #0a0c12;
+    color: white;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+  
+  .about:hover {
+    background-color: #06070b;
+    color: orange;
+    border-color: #feffff98;
+  }
+  
+  .github-icon {
+    width: clamp(30px, 4vw, 53px); /* Minimum 30px, preferred 4vw, maximum 50px */
+    height: auto;
+    cursor: pointer;
+    transition: filter 0.3s ease;
+  }
+  
+  .github-icon:hover {
+    filter: brightness(0.8); /* Darken the icon on hover */
+  }
+  
