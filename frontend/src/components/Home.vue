@@ -9,7 +9,7 @@
         <img src="/src/assets/images/github-icon.png" alt="GitHub" class="github-icon" />
       </a>
     </div>
-    <div class="date">December 16, 2025</div>
+    <!-- <div class="date">December 16, 2025</div> -->
     <!-- Insert the scrollable, zoomable world map here -->
     <WorldMap />
   </div>
