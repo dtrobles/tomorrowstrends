@@ -1,80 +1,93 @@
 @font-face {
-    font-family: 'Emulogic';
-    src: url('/src/assets/fonts/Emulogic.ttf') format('truetype');
-  }
-  
-  .map-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    background-color: #12191f;
-    color: white;
-    height: 100vh;
-  }
-  
-  .header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    position: relative; /* Added for absolute positioning of the title */
-    width: 100%;
-    padding: 1% 2%;
-    box-sizing: border-box;
-  }
-  
-  .title {
-    font-family: 'Emulogic', sans-serif;
-    font-size: 2.5rem;
-    color: orange;
-    flex-grow: 1;
-    position: absolute;   /* Position the title absolutely */
-    left: 50%;            /* Center horizontally relative to the header */
-    transform: translateX(-50%); /* Offset the title by half its width to truly center it */
-    text-align: center;   /* Ensure text within is centered */
-  }
-  
-  .date {
-    font-size: 1rem;
-    color: #e0e0e0;
-    background-color: #333;
-    padding: 5px 10px;
-    border-radius: 5px;
-  }
-  
-  .about-button {
-    margin-right: auto;
-    position: fixed;
-    top: 20px;
-    left: 20px;
-    background-color: #0D1017;
-  }
-  
-  .about {
-    font-size: 0.8rem;
-    font-family: 'Emulogic', sans-serif;
-    padding: 25% 50%;
-    border: 2px solid #FEFFFF;
-    background-color: #0a0c12;
-    color: white;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background-color 0.3s ease, color 0.3s ease;
-  }
-  
-  .about:hover {
-    background-color: #06070b;
-    color: orange;
-    border-color: #feffff98;
-  }
-  
-  .github-icon {
-    width: clamp(30px, 4vw, 53px); /* Minimum 30px, preferred 4vw, maximum 50px */
-    height: auto;
-    cursor: pointer;
-    transition: filter 0.3s ease;
-  }
-  
-  .github-icon:hover {
-    filter: brightness(0.8); /* Darken the icon on hover */
-  }
-  
+  font-family: 'Emulogic';
+  src: url('/src/assets/fonts/Emulogic.ttf') format('truetype');
+}
+
+.map-container {
+  position: relative;
+  background-color: transparent; 
+  color: white;
+  height: 103vh;
+  overflow: hidden;
+  z-index: 0;
+}
+
+html, body {
+  overflow-y: hidden;
+}
+
+/* World map covers the entire viewport */
+.full-map {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1; /* Behind the header */
+}
+
+/* Transparent header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: fixed; 
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding: 1% 2%;
+  box-sizing: border-box;
+  background: transparent;  /* No background color */
+  /* Removed backdrop-filter for a clear transparent look */
+  z-index: 100;  /* Ensures it's on top of the map */
+}
+
+/* Title with vertical gradient and drop shadow behind the text */
+.title {
+  font-family: 'Emulogic', sans-serif;
+  font-size: 2.2rem;
+  flex-grow: 1;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  background: linear-gradient(to bottom, #FE4818, #EED618);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0px 0px 7px rgba(0, 0, 0, 1));
+}
+
+/* About button with drop shadow */
+.about {
+  font-size: 0.8rem;
+  font-family: 'Emulogic', sans-serif;
+  padding: 0.5em 1em;
+  border: 2px solid #FEFFFF;
+  background-color: #0a0c12;
+  color: white;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.3s ease, color 0.3s ease;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5);
+}
+
+.about:hover {
+  background-color: #06070b;
+  color: orange;
+  border-color: #feffff98;
+}
+
+/* GitHub icon with drop shadow */
+.github-icon {
+  width: clamp(30px, 4vw, 53px);
+  height: auto;
+  cursor: pointer;
+  transition: filter 0.3s ease;
+  /* box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5); */
+}
+
+.github-icon:hover {
+  filter: brightness(0.8);
+}

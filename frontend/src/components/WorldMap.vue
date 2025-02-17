@@ -3,11 +3,11 @@
     <!-- Map container -->
     <div id="map" ref="mapContainer"></div>
     <!-- Projection toggle and reset view buttons -->
-    <div class="projection-toggle">
+    <!-- <div class="projection-toggle">
       <button @click="resetView">
         Reset View
       </button>
-    </div>
+    </div> -->
   </div>
 </template>
 
@@ -32,7 +32,7 @@ export default defineComponent({
       if (map.value) {
         map.value.flyTo({
           center: [0, 20],
-          zoom: 1.5,
+          zoom: 2, // Increased starting zoom
           pitch: 0,
           bearing: 0,
         });
@@ -49,23 +49,18 @@ export default defineComponent({
         style: 'mapbox://styles/notaspect0/cm6yfnj5a00oa01sb3y1pfflk', // base style
         container: mapContainer.value,
         center: [0, 20],
-        zoom: 1.5,
+        zoom: 2, // Increased starting zoom
         maxZoom: 5,
         minZoom: 1,
-
       });
 
       map.value.on('load', () => {
-
-        // Add your custom GeoJSON source for country borders and generate unique IDs
         map.value.addSource('countries', {
           type: 'geojson',
           data: '/countries.geo.json', // Adjust this path if needed.
           generateId: true,
         });
         
-        // Add a fill layer that is invisible by default but will be styled on hover.
-        // The paint uses feature-state "hover" to determine its fill color and opacity.
         map.value.addLayer({
           id: 'country-fills',
           type: 'fill',
@@ -87,7 +82,6 @@ export default defineComponent({
           },
         });
 
-        // Add a line layer to display country borders.
         map.value.addLayer({
           id: 'country-borders',
           type: 'line',
@@ -95,11 +89,10 @@ export default defineComponent({
           layout: {},
           paint: {
             'line-color': '#E4801D',
-            'line-width': 0.5,
+            'line-width': 0.0,
           },
         });
 
-        // When clicking on the map, query the invisible fill layer for country features.
         map.value.on('click', (e: mapboxgl.MapMouseEvent) => {
           const features = map.value!.queryRenderedFeatures(e.point, {
             layers: ['country-fills'],
@@ -113,21 +106,15 @@ export default defineComponent({
           }
         });
 
-        // Use mousemove on the fill layer to update feature state and style hovered country.
         map.value.on('mousemove', 'country-fills', (e: any) => {
           if (!e.features || !e.features.length) return;
-
-          // Change the cursor to pointer
           map.value!.getCanvas().style.cursor = 'pointer';
-
-          // Remove hover state from the previously hovered feature, if any.
           if (hoveredStateId !== null) {
             map.value!.setFeatureState(
               { source: 'countries', id: hoveredStateId },
               { hover: false }
             );
           }
-
           hoveredStateId = e.features[0].id;
           map.value!.setFeatureState(
             { source: 'countries', id: hoveredStateId },
@@ -135,7 +122,6 @@ export default defineComponent({
           );
         });
 
-        // Reset the hover state when the mouse leaves the fill layer.
         map.value.on('mouseleave', 'country-fills', () => {
           if (hoveredStateId !== null) {
             map.value!.setFeatureState(
@@ -189,8 +175,8 @@ export default defineComponent({
 /* Style for the projection toggle and reset view buttons */
 .projection-toggle {
   position: absolute;
-  top: 10px;
-  left: 10px;
+  bottom: 11vh; /* Moved to bottom left */
+  right: 3vh;
   z-index: 1;
   display: flex;
   flex-direction: column;
