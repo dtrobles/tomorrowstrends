@@ -1,0 +1,78 @@
+@font-face {
+    font-family: 'Emulogic';
+    src: url('/src/assets/fonts/Emulogic.ttf') format('truetype');
+  }
+
+  .world-map {
+    position: relative;
+    width: 100%;
+    height: 100%;
+  }
+  
+  #map {
+    width: 100%;
+    height: 100%;
+  }
+  
+  /* Modal Overlay (covers the entire screen) */
+  .modal-overlay {
+    position: fixed;
+    backdrop-filter: blur(5px);
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5); /* Semi-transparent dark overlay */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200; /* Ensure it sits above the map & header */
+  }
+  
+  /* Modal styling */
+  .modal {
+    font-family: 'Emulogic', sans-serif;
+    background: #0a0f13cc;
+    border: 3px solid white;
+    padding: 20px;
+    width: 40%;                    /* Adjust width for a vertical rectangle */
+    height: 80%;
+    box-shadow: 0 0px 16px rgba(0, 0, 0, 1);
+    border-radius: 10px;
+    color: white;
+  }
+
+  .modalTitle {
+    font-family: 'Emulogic', sans-serif;
+    font-size: 2rem;
+    text-align: center;
+    background: linear-gradient(to bottom, #B36EDA, #ADFBF8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0px 0px 7px rgba(0, 0, 0, 1));
+  }
+  
+  .modal h2 {
+    margin-top: 0;
+    text-align: center;
+    
+  }
+  
+  .modal hr {
+    border: none;
+    border-top: 3px solid white;
+    width: 40%;
+    margin: 10px auto;
+    
+  }
+  
+  .close-modal {
+    display: block;
+    margin: 10px auto 0;
+    background: #FE4818;
+    border: none;
+    padding: 5px 10px;
+    cursor: pointer;
+  }

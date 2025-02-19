@@ -2,18 +2,27 @@
   <div class="world-map">
     <!-- Map container -->
     <div id="map" ref="mapContainer"></div>
-    <!-- Projection toggle and reset view buttons -->
-    <!-- <div class="projection-toggle">
-      <button @click="resetView">
-        Reset View
-      </button>
-    </div> -->
+
+    <!-- Modal overlay: only visible when a country is selected -->
+    <div v-if="selectedCountry" class="modal-overlay" @click.self="closeModal">
+      <div class="modal">
+        <h2 class="modalTitle">News Prediction</h2>
+        <hr />
+        <p>{{ selectedCountry }} | Dec 15, 2026</p>
+        <div class="news-articles">
+          <!-- Div for adding news articles later -->
+        </div>
+        <button class="close-modal" @click="closeModal">Close</button>
+      </div>
+    </div>
   </div>
 </template>
 
 <script lang="ts">
 import { defineComponent, ref, onMounted, onBeforeUnmount } from 'vue';
 import mapboxgl from 'mapbox-gl';
+import throttle from 'lodash.throttle';
+import '../assets/styles/worldMap.css';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
 export default defineComponent({
@@ -21,79 +30,92 @@ export default defineComponent({
   setup() {
     const mapContainer = ref<HTMLElement | null>(null);
     const map = ref<mapboxgl.Map | null>(null);
-    const projection = ref<'globe'>('globe');
+    const selectedCountry = ref<string | null>(null);
+    let hoveredStateId: number | string | null = null;
 
-    // Set your Mapbox access token (ensure your .env uses the VITE_ prefix)
+    // Animate fade in from 0 to 1 over 1 second
+    function animateHover(featureId: number | string) {
+      let start: number | null = null;
+      function step(timestamp: number) {
+        if (start === null) start = timestamp;
+        const progress = Math.min((timestamp - start) / 200, 0.6); // 0 to 1
+        map.value!.setFeatureState(
+          { source: 'countries', sourceLayer: 'countriesgeo', id: featureId },
+          { opacity: progress }
+        );
+        if (progress < 0.6) {
+          requestAnimationFrame(step);
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    // Animate fade out from 1 to 0 over 1 second
+    function animateFadeOut(featureId: number | string) {
+      let start: number | null = null;
+      function step(timestamp: number) {
+        if (start === null) start = timestamp;
+        const progress = Math.min((timestamp - start) / 200, 0.6); // 0 to 1
+        const newOpacity = 0.6 - progress;
+        map.value!.setFeatureState(
+          { source: 'countries', sourceLayer: 'countriesgeo', id: featureId },
+          { opacity: newOpacity }
+        );
+        if (progress < 0.6) {
+          requestAnimationFrame(step);
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
     mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
     console.log('Mapbox token:', import.meta.env.VITE_MAPBOX_TOKEN);
-
-    // Function to reset the map view (center, zoom, pitch, and bearing)
-    const resetView = () => {
-      if (map.value) {
-        map.value.flyTo({
-          center: [0, 20],
-          zoom: 2, // Increased starting zoom
-          pitch: 0,
-          bearing: 0,
-        });
-      }
-    };
-
-    // Variable to store the currently hovered feature's id
-    let hoveredStateId: number | string | null = null;
 
     onMounted(() => {
       if (!mapContainer.value) return;
 
       map.value = new mapboxgl.Map({
-        style: 'mapbox://styles/notaspect0/cm6yfnj5a00oa01sb3y1pfflk', // base style
+        style: 'mapbox://styles/notaspect0/cm6yfnj5a00oa01sb3y1pfflk',
         container: mapContainer.value,
         center: [0, 20],
-        zoom: 2, // Increased starting zoom
+        zoom: 2,
         maxZoom: 5,
         minZoom: 1,
       });
 
       map.value.on('load', () => {
-        map.value.addSource('countries', {
-          type: 'geojson',
-          data: '/countries.geo.json', // Adjust this path if needed.
-          generateId: true,
+        // Add your vector tile source
+        map.value!.addSource('countries', {
+          type: 'vector',
+          url: 'http://localhost:8080/data/output_low.json'
         });
-        
-        map.value.addLayer({
+
+        // (Optional) Debug layer to see features
+        map.value!.addLayer({
+          id: 'debug-fill',
+          type: 'fill',
+          source: 'countries',
+          'source-layer': 'countriesgeo',
+          paint: {
+            'fill-color': '#FFFFFF',
+            'fill-opacity': 0.5
+          }
+        });
+
+        // Fill layer using a numeric opacity from feature state
+        map.value!.addLayer({
           id: 'country-fills',
           type: 'fill',
           source: 'countries',
-          layout: {},
+          'source-layer': 'countriesgeo', // update if needed
           paint: {
-            'fill-color': [
-              'case',
-              ['boolean', ['feature-state', 'hover'], false],
-              'orange',
-              '#000000'
-            ],
-            'fill-opacity': [
-              'case',
-              ['boolean', ['feature-state', 'hover'], false],
-              0.5,
-              0
-            ],
+            'fill-color': 'orange',
+            'fill-opacity': ['coalesce', ['feature-state', 'opacity'], 0],
           },
         });
 
-        map.value.addLayer({
-          id: 'country-borders',
-          type: 'line',
-          source: 'countries',
-          layout: {},
-          paint: {
-            'line-color': '#E4801D',
-            'line-width': 0.0,
-          },
-        });
-
-        map.value.on('click', (e: mapboxgl.MapMouseEvent) => {
+        // Show modal on click
+        map.value!.on('click', (e: mapboxgl.MapMouseEvent) => {
           const features = map.value!.queryRenderedFeatures(e.point, {
             layers: ['country-fills'],
           });
@@ -102,32 +124,37 @@ export default defineComponent({
               features[0].properties?.ADMIN ||
               features[0].properties?.name ||
               'Unknown country';
-            console.log(countryName);
+            selectedCountry.value = countryName;
           }
         });
 
-        map.value.on('mousemove', 'country-fills', (e: any) => {
+        // Throttle mousemove event
+        map.value!.on('mousemove', 'country-fills', throttle((e: any) => {
           if (!e.features || !e.features.length) return;
           map.value!.getCanvas().style.cursor = 'pointer';
-          if (hoveredStateId !== null) {
-            map.value!.setFeatureState(
-              { source: 'countries', id: hoveredStateId },
-              { hover: false }
-            );
-          }
-          hoveredStateId = e.features[0].id;
-          map.value!.setFeatureState(
-            { source: 'countries', id: hoveredStateId },
-            { hover: true }
-          );
-        });
 
-        map.value.on('mouseleave', 'country-fills', () => {
+          // const hoveredCountry =
+          //   e.features[0].properties?.ADMIN ||
+          //   e.features[0].properties?.name ||
+          //   'Unknown country';
+          // console.log('Hovering over country:', hoveredCountry);
+
+          const newFeatureId = e.features[0].id;
+
+          // If a different feature is now hovered, fade out the previous one.
+          if (hoveredStateId !== null && hoveredStateId !== newFeatureId) {
+            animateFadeOut(hoveredStateId);
+            hoveredStateId = newFeatureId;
+            animateHover(newFeatureId);
+          } else if (hoveredStateId === null) {
+            hoveredStateId = newFeatureId;
+            animateHover(newFeatureId);
+          }
+        }, 5));
+
+        map.value!.on('mouseleave', 'country-fills', () => {
           if (hoveredStateId !== null) {
-            map.value!.setFeatureState(
-              { source: 'countries', id: hoveredStateId },
-              { hover: false }
-            );
+            animateFadeOut(hoveredStateId);
           }
           hoveredStateId = null;
           map.value!.getCanvas().style.cursor = '';
@@ -141,59 +168,15 @@ export default defineComponent({
       }
     });
 
-    const setProjection = (mode: 'globe') => {
-      projection.value = mode;
-      if (map.value) {
-        if (mode === 'globe') {
-          map.value.setProjection('globe');
-        }
-      }
+    const closeModal = () => {
+      selectedCountry.value = null;
     };
 
     return {
       mapContainer,
-      setProjection,
-      resetView,
-      projection,
+      selectedCountry,
+      closeModal,
     };
   },
 });
 </script>
-
-<style scoped>
-.world-map {
-  position: relative;
-  width: 100%;
-  height: 100%;
-}
-
-#map {
-  width: 100%;
-  height: 100%;
-}
-
-/* Style for the projection toggle and reset view buttons */
-.projection-toggle {
-  position: absolute;
-  bottom: 11vh; /* Moved to bottom left */
-  right: 3vh;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-}
-
-.projection-toggle button {
-  background-color: #0D1017;
-  color: white;
-  border: 1px solid #fff;
-  padding: 5px 10px;
-  margin-bottom: 5px;
-  cursor: pointer;
-  transition: background-color 0.3s ease, color 0.3s ease;
-}
-
-.projection-toggle button.active {
-  background-color: orange;
-  color: black;
-}
-</style>
