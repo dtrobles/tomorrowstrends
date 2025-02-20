@@ -6,11 +6,28 @@
     <!-- Modal overlay: only visible when a country is selected -->
     <div v-if="selectedCountry" class="modal-overlay" @click.self="closeModal">
       <div class="modal">
-        <h2 class="modalTitle">News Prediction</h2>
+        <h2 class="modalTitle">News Prediction for {{ selectedCountry }}</h2>
         <hr />
         <p>{{ selectedCountry }} | Dec 15, 2026</p>
         <div class="news-articles">
-          <!-- Div for adding news articles later -->
+          <div class="prediction-section">
+            <h3>Tomorrow's Trends</h3>
+            <ul>
+              <li v-for="(trend, index) in predictions.tomorrow" :key="index">{{ trend }}</li>
+            </ul>
+          </div>
+          <div class="prediction-section">
+            <h3>3 Days Trends</h3>
+            <ul>
+              <li v-for="(trend, index) in predictions.threeDays" :key="index">{{ trend }}</li>
+            </ul>
+          </div>
+          <div class="prediction-section">
+            <h3>5 Days Trends</h3>
+            <ul>
+              <li v-for="(trend, index) in predictions.fiveDays" :key="index">{{ trend }}</li>
+            </ul>
+          </div>
         </div>
         <button class="close-modal" @click="closeModal">Close</button>
       </div>
@@ -19,7 +36,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, onMounted, onBeforeUnmount } from 'vue';
+import { defineComponent, ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import mapboxgl from 'mapbox-gl';
 import throttle from 'lodash.throttle';
 import '../assets/styles/worldMap.css';
@@ -31,41 +48,57 @@ export default defineComponent({
     const mapContainer = ref<HTMLElement | null>(null);
     const map = ref<mapboxgl.Map | null>(null);
     const selectedCountry = ref<string | null>(null);
+    const predictions = ref({
+      tomorrow: [] as string[],
+      threeDays: [] as string[],
+      fiveDays: [] as string[],
+    });
     let hoveredStateId: number | string | null = null;
+    const animationFrameIds: { [key: string]: number } = {};
 
-    // Animate fade in from 0 to 1 over 1 second
+    // Animate fade in (hover)
     function animateHover(featureId: number | string) {
+      if (animationFrameIds[featureId]) {
+        cancelAnimationFrame(animationFrameIds[featureId]);
+      }
       let start: number | null = null;
       function step(timestamp: number) {
         if (start === null) start = timestamp;
-        const progress = Math.min((timestamp - start) / 200, 0.6); // 0 to 1
+        const progress = Math.min((timestamp - start) / 200, 0.6);
         map.value!.setFeatureState(
-          { source: 'countries', sourceLayer: 'countriesgeo', id: featureId },
+          { source: 'countries', sourceLayer: 'hidef', id: featureId },
           { opacity: progress }
         );
         if (progress < 0.6) {
-          requestAnimationFrame(step);
+          animationFrameIds[featureId] = requestAnimationFrame(step);
+        } else {
+          delete animationFrameIds[featureId];
         }
       }
-      requestAnimationFrame(step);
+      animationFrameIds[featureId] = requestAnimationFrame(step);
     }
 
-    // Animate fade out from 1 to 0 over 1 second
+    // Animate fade out
     function animateFadeOut(featureId: number | string) {
+      if (animationFrameIds[featureId]) {
+        cancelAnimationFrame(animationFrameIds[featureId]);
+      }
       let start: number | null = null;
       function step(timestamp: number) {
         if (start === null) start = timestamp;
-        const progress = Math.min((timestamp - start) / 200, 0.6); // 0 to 1
+        const progress = Math.min((timestamp - start) / 200, 0.6);
         const newOpacity = 0.6 - progress;
         map.value!.setFeatureState(
-          { source: 'countries', sourceLayer: 'countriesgeo', id: featureId },
+          { source: 'countries', sourceLayer: 'hidef', id: featureId },
           { opacity: newOpacity }
         );
         if (progress < 0.6) {
-          requestAnimationFrame(step);
+          animationFrameIds[featureId] = requestAnimationFrame(step);
+        } else {
+          delete animationFrameIds[featureId];
         }
       }
-      requestAnimationFrame(step);
+      animationFrameIds[featureId] = requestAnimationFrame(step);
     }
 
     mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
@@ -84,37 +117,22 @@ export default defineComponent({
       });
 
       map.value.on('load', () => {
-        // Add your vector tile source
         map.value!.addSource('countries', {
           type: 'vector',
-          url: 'http://localhost:8080/data/output_low.json'
+          url: 'http://localhost:8080/data/output_hi.json'
         });
 
-        // (Optional) Debug layer to see features
-        map.value!.addLayer({
-          id: 'debug-fill',
-          type: 'fill',
-          source: 'countries',
-          'source-layer': 'countriesgeo',
-          paint: {
-            'fill-color': '#FFFFFF',
-            'fill-opacity': 0.5
-          }
-        });
-
-        // Fill layer using a numeric opacity from feature state
         map.value!.addLayer({
           id: 'country-fills',
           type: 'fill',
           source: 'countries',
-          'source-layer': 'countriesgeo', // update if needed
+          'source-layer': 'hidef',
           paint: {
             'fill-color': 'orange',
             'fill-opacity': ['coalesce', ['feature-state', 'opacity'], 0],
           },
         });
 
-        // Show modal on click
         map.value!.on('click', (e: mapboxgl.MapMouseEvent) => {
           const features = map.value!.queryRenderedFeatures(e.point, {
             layers: ['country-fills'],
@@ -128,20 +146,10 @@ export default defineComponent({
           }
         });
 
-        // Throttle mousemove event
         map.value!.on('mousemove', 'country-fills', throttle((e: any) => {
           if (!e.features || !e.features.length) return;
           map.value!.getCanvas().style.cursor = 'pointer';
-
-          // const hoveredCountry =
-          //   e.features[0].properties?.ADMIN ||
-          //   e.features[0].properties?.name ||
-          //   'Unknown country';
-          // console.log('Hovering over country:', hoveredCountry);
-
           const newFeatureId = e.features[0].id;
-
-          // If a different feature is now hovered, fade out the previous one.
           if (hoveredStateId !== null && hoveredStateId !== newFeatureId) {
             animateFadeOut(hoveredStateId);
             hoveredStateId = newFeatureId;
@@ -150,7 +158,7 @@ export default defineComponent({
             hoveredStateId = newFeatureId;
             animateHover(newFeatureId);
           }
-        }, 5));
+        }, 50));
 
         map.value!.on('mouseleave', 'country-fills', () => {
           if (hoveredStateId !== null) {
@@ -168,6 +176,43 @@ export default defineComponent({
       }
     });
 
+    // Fetch predictions from the Flask GraphQL backend
+    async function fetchPredictions(country: string) {
+      const query = `
+        query($country: String) {
+          predictions(country: $country) {
+            tomorrow
+            threeDays
+            fiveDays
+          }
+        }
+      `;
+      const variables = { country };
+      try {
+        const response = await fetch('http://127.0.0.1:5000/graphql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, variables }),
+        });
+        const result = await response.json();
+        console.log("[DEBUG] GraphQL response received:", result); // Debug print
+        if (result.data && result.data.predictions) {
+          predictions.value = result.data.predictions;
+        }
+      } catch (error) {
+        console.error("Error fetching predictions:", error);
+      }
+    }
+
+    // Watch for changes in selectedCountry to fetch predictions
+    watch(selectedCountry, (newCountry) => {
+      if (newCountry) {
+        fetchPredictions(newCountry);
+      } else {
+        predictions.value = { tomorrow: [], threeDays: [], fiveDays: [] };
+      }
+    });
+
     const closeModal = () => {
       selectedCountry.value = null;
     };
@@ -175,6 +220,7 @@ export default defineComponent({
     return {
       mapContainer,
       selectedCountry,
+      predictions,
       closeModal,
     };
   },

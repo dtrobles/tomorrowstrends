@@ -1,0 +1,30 @@
+{
+    "version": 8,
+    "name": "Basic Preview",
+    "sources": {
+      "output_hi": {
+        "type": "vector",
+        "url": "mbtiles://output_hi.mbtiles"
+      }
+    },
+    "layers": [
+      {
+        "id": "background",
+        "type": "background",
+        "paint": {
+          "background-color": "#ffffff"
+        }
+      },
+      {
+        "id": "output_hi-fill",
+        "type": "fill",
+        "source": "output_hi",
+        "source-layer": "hidef",
+        "paint": {
+          "fill-color": "#007cbf",
+          "fill-opacity": 0.5
+        }
+      }
+    ]
+  }
+  
