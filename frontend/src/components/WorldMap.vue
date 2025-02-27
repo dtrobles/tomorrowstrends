@@ -1,4 +1,4 @@
-<template>
+<template> 
   <div class="world-map">
     <!-- Map container -->
     <div id="map" ref="mapContainer"></div>
@@ -6,7 +6,7 @@
     <!-- Modal overlay: only visible when a country is selected -->
     <div v-if="selectedCountry" class="modal-overlay" @click.self="closeModal">
       <div class="modal">
-        <h2 class="modalTitle">News Prediction for {{ selectedCountry }}</h2>
+        <h2 class="modalTitle">News Prediction</h2>
         <hr />
         <p>{{ selectedCountry }} | Dec 15, 2026</p>
         <div class="news-articles">
@@ -54,52 +54,6 @@ export default defineComponent({
       fiveDays: [] as string[],
     });
     let hoveredStateId: number | string | null = null;
-    const animationFrameIds: { [key: string]: number } = {};
-
-    // Animate fade in (hover)
-    function animateHover(featureId: number | string) {
-      if (animationFrameIds[featureId]) {
-        cancelAnimationFrame(animationFrameIds[featureId]);
-      }
-      let start: number | null = null;
-      function step(timestamp: number) {
-        if (start === null) start = timestamp;
-        const progress = Math.min((timestamp - start) / 200, 0.6);
-        map.value!.setFeatureState(
-          { source: 'countries', sourceLayer: 'hidef', id: featureId },
-          { opacity: progress }
-        );
-        if (progress < 0.6) {
-          animationFrameIds[featureId] = requestAnimationFrame(step);
-        } else {
-          delete animationFrameIds[featureId];
-        }
-      }
-      animationFrameIds[featureId] = requestAnimationFrame(step);
-    }
-
-    // Animate fade out
-    function animateFadeOut(featureId: number | string) {
-      if (animationFrameIds[featureId]) {
-        cancelAnimationFrame(animationFrameIds[featureId]);
-      }
-      let start: number | null = null;
-      function step(timestamp: number) {
-        if (start === null) start = timestamp;
-        const progress = Math.min((timestamp - start) / 200, 0.6);
-        const newOpacity = 0.6 - progress;
-        map.value!.setFeatureState(
-          { source: 'countries', sourceLayer: 'hidef', id: featureId },
-          { opacity: newOpacity }
-        );
-        if (progress < 0.6) {
-          animationFrameIds[featureId] = requestAnimationFrame(step);
-        } else {
-          delete animationFrameIds[featureId];
-        }
-      }
-      animationFrameIds[featureId] = requestAnimationFrame(step);
-    }
 
     mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
     console.log('Mapbox token:', import.meta.env.VITE_MAPBOX_TOKEN);
@@ -151,18 +105,33 @@ export default defineComponent({
           map.value!.getCanvas().style.cursor = 'pointer';
           const newFeatureId = e.features[0].id;
           if (hoveredStateId !== null && hoveredStateId !== newFeatureId) {
-            animateFadeOut(hoveredStateId);
+            // Reset previous country immediately
+            map.value!.setFeatureState(
+              { source: 'countries', sourceLayer: 'hidef', id: hoveredStateId },
+              { opacity: 0 }
+            );
             hoveredStateId = newFeatureId;
-            animateHover(newFeatureId);
+            // Set new hovered country immediately
+            map.value!.setFeatureState(
+              { source: 'countries', sourceLayer: 'hidef', id: newFeatureId },
+              { opacity: 0.6 }
+            );
           } else if (hoveredStateId === null) {
             hoveredStateId = newFeatureId;
-            animateHover(newFeatureId);
+            map.value!.setFeatureState(
+              { source: 'countries', sourceLayer: 'hidef', id: newFeatureId },
+              { opacity: 0.6 }
+            );
           }
-        }, 50));
+        }, 100));
 
         map.value!.on('mouseleave', 'country-fills', () => {
           if (hoveredStateId !== null) {
-            animateFadeOut(hoveredStateId);
+            // Reset hovered country immediately
+            map.value!.setFeatureState(
+              { source: 'countries', sourceLayer: 'hidef', id: hoveredStateId },
+              { opacity: 0 }
+            );
           }
           hoveredStateId = null;
           map.value!.getCanvas().style.cursor = '';
@@ -195,7 +164,7 @@ export default defineComponent({
           body: JSON.stringify({ query, variables }),
         });
         const result = await response.json();
-        console.log("[DEBUG] GraphQL response received:", result); // Debug print
+        console.log("[DEBUG] GraphQL response received:", result);
         if (result.data && result.data.predictions) {
           predictions.value = result.data.predictions;
         }

@@ -11,6 +11,8 @@ from pytrends.request import TrendReq
 from sklearn.ensemble import RandomForestClassifier
 import time
 import warnings
+from db import SessionLocal, CountryData, Prediction, Model, init_db
+init_db()
 
 ###############################################################################
 # Constants / Config
@@ -33,51 +35,86 @@ def get_country_data_folder(country_code):
     return folder_path
 
 def load_existing_data(country_code):
-    """
-    Load previously stored raw data if available, otherwise return an empty DataFrame.
-    """
-    folder = get_country_data_folder(country_code)
-    data_path = os.path.join(folder, "raw_data.csv")
-    if os.path.exists(data_path):
-        return pd.read_csv(data_path)
-    else:
-        return pd.DataFrame(columns=["date", "term", "value"])
+    session = SessionLocal()
+    try:
+        records = session.query(CountryData).filter(CountryData.country_code == country_code).all()
+        data = [
+            {"date": r.date, "term": r.term, "value": r.value}
+            for r in records
+        ]
+        df = pd.DataFrame(data)
+    finally:
+        session.close()
+    return df
 
 def save_data(df, country_code):
-    """
-    Save the raw data DataFrame as CSV.
-    """
-    folder = get_country_data_folder(country_code)
-    data_path = os.path.join(folder, "raw_data.csv")
-    df.to_csv(data_path, index=False)
+    session = SessionLocal()
+    try:
+        # Insert new records; add your own logic to avoid duplicates if needed.
+        for _, row in df.iterrows():
+            record = CountryData(
+                country_code=country_code,
+                date=row["date"],
+                term=row["term"],
+                value=row["value"]
+            )
+            session.add(record)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print("Error saving data:", e)
+    finally:
+        session.close()
 
 def save_model(model_dict, country_code):
-    """
-    Serialize the trained models (for tomorrow, 3-day, 5-day) to disk.
-    """
-    folder = get_country_data_folder(country_code)
-    model_path = os.path.join(folder, "model.pkl")
-    with open(model_path, "wb") as f:
-        pickle.dump(model_dict, f)
+    session = SessionLocal()
+    try:
+        model_blob = pickle.dumps(model_dict)
+        existing = session.query(Model).filter(Model.country_code == country_code).first()
+        if existing:
+            existing.model_blob = model_blob
+        else:
+            new_model = Model(country_code=country_code, model_blob=model_blob)
+            session.add(new_model)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print("Error saving model:", e)
+    finally:
+        session.close()
 
 def load_model(country_code):
-    """
-    Load previously saved models, if any.
-    """
-    folder = get_country_data_folder(country_code)
-    model_path = os.path.join(folder, "model.pkl")
-    if os.path.exists(model_path):
-        with open(model_path, "rb") as f:
-            return pickle.load(f)
+    session = SessionLocal()
+    try:
+        record = session.query(Model).filter(Model.country_code == country_code).first()
+        if record:
+            return pickle.loads(record.model_blob)
+    except Exception as e:
+        print("Error loading model:", e)
+    finally:
+        session.close()
     return None
 
 def save_predictions(predictions_df, country_code):
-    """
-    Save the final predictions (for tomorrow, 3 days out, 5 days out).
-    """
-    folder = get_country_data_folder(country_code)
-    preds_path = os.path.join(folder, "predictions.csv")
-    predictions_df.to_csv(preds_path, index=False)
+    session = SessionLocal()
+    try:
+        # Optionally remove old predictions for this country first:
+        session.query(Prediction).filter(Prediction.country_code == country_code).delete()
+        session.commit()
+        # Insert new predictions
+        for _, row in predictions_df.iterrows():
+            pred = Prediction(
+                country_code=country_code,
+                horizon=row["horizon"],
+                term=row["term"]
+            )
+            session.add(pred)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print("Error saving predictions:", e)
+    finally:
+        session.close()
 
 ###############################################################################
 # Trending Terms Fetching (using Selenium from file 2)

@@ -2,6 +2,8 @@
 import argparse
 import os
 import pandas as pd
+import argparse
+from db import SessionLocal, Prediction
 
 DATA_DIR = "data"
 
@@ -13,15 +15,13 @@ def get_country_data_folder(country_code):
     return folder_path
 
 def load_predictions(country_code):
-    """
-    Load predictions from predictions.csv if available. Otherwise return an empty DataFrame.
-    """
-    folder = get_country_data_folder(country_code)
-    preds_path = os.path.join(folder, "predictions.csv")
-    if os.path.exists(preds_path):
-        return pd.read_csv(preds_path)
-    else:
-        return pd.DataFrame()
+    session = SessionLocal()
+    try:
+        records = session.query(Prediction).filter(Prediction.country_code == country_code).all()
+        preds = [{"horizon": r.horizon, "term": r.term} for r in records]
+    finally:
+        session.close()
+    return preds
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch predictions for Tomorrow's Trends.")
@@ -31,24 +31,19 @@ def main():
     country_code = args.country.upper()
     print(f"[INFO] Loading predictions for country={country_code}...")
 
-    preds_df = load_predictions(country_code)
-
-    if preds_df.empty:
+    preds = load_predictions(country_code)
+    if not preds:
         print(f"[WARN] No predictions found for country {country_code}.")
-        print("[INFO] Please run 'model.py --country {country}' first to generate predictions.")
+        print(f"[INFO] Please run model.py with the appropriate arguments to generate predictions.")
         return
 
-    print(f"[INFO] Found {len(preds_df)} prediction rows. Displaying by horizon...")
-
-    # Display predictions for tomorrow, 3-days, and 5-days
+    print(f"[INFO] Found {len(preds)} prediction rows. Displaying by horizon...")
     horizons = ["tomorrow", "3_days", "5_days"]
     for horizon in horizons:
-        subset = preds_df[preds_df["horizon"] == horizon]
-        if subset.empty:
+        terms_list = [p["term"] for p in preds if p["horizon"] == horizon]
+        if not terms_list:
             print(f"[WARN] No predictions found for horizon='{horizon}' in country={country_code}.")
             continue
-
-        terms_list = subset["term"].tolist()
         print(f"\n[INFO] Top terms predicted for {horizon} (country={country_code}):")
         for term in terms_list:
             print(f"  - {term}")

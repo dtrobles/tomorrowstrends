@@ -16,6 +16,7 @@ class Query(graphene.ObjectType):
     def resolve_predictions(self, info, country=None):
         # Mapping from frontend country names to folder codes
         mapping = {
+            "United States of America": "US",
             "United States": "US",
             "US": "US",
             "Japan": "JP",
