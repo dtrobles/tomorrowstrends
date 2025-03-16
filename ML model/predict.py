@@ -48,5 +48,6 @@ def main():
         for term in terms_list:
             print(f"  - {term}")
 
+
 if __name__ == "__main__":
     main()

@@ -1,3 +1,7 @@
-psql -U postgres
+psql -U postgres -d mydatabase
+ALTER USER aspect WITH SUPERUSER;
+
+
+psql -U aspect -d mydatabase
 
 password: Dylanx5260!
