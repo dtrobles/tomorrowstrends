@@ -7,6 +7,8 @@
       </p>
       <p>
         The homepage features an interactive world map where you can click on a country to see predictions specific to that country.
+
+        I used a random forest colassifier because of limited dataset size, and it works well with tabular data.
       </p>
       <button @click="goBack">Go Back</button>
     </div>

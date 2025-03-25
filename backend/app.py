@@ -7,11 +7,13 @@ from flask_cors import CORS
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
+from datetime import date
+import subprocess
 
 # Add the "ML model" directory to sys.path so we can import db.py
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ML model')))
 
-from db import Prediction  # Import the Prediction model and SessionLocal from db.py
+from db import Prediction, CountryData  # Import the Prediction and CountryData models
 
 # Load environment variables from .env
 load_dotenv()
@@ -20,6 +22,17 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # Setup SQLAlchemy engine and session
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def run_model_update(country_code: str):
+    """
+    Run the ML model update for the specified country.
+    """
+    model_script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ML model', 'model.py'))
+    try:
+        subprocess.run(["python", model_script_path, "--country", country_code, "--update"], check=True)
+        print(f"[DEBUG] Data for {country_code} updated via ML model.")
+    except Exception as e:
+        print(f"[DEBUG] Error updating data for {country_code}: {e}")
 
 class TrendPrediction(graphene.ObjectType):
     tomorrow = graphene.List(graphene.String)
@@ -48,9 +61,26 @@ class Query(graphene.ObjectType):
 
         session = SessionLocal()
         try:
+            # Check if today's data exists; if not, trigger update.
+            today = date.today()
+            update_needed = session.query(CountryData).filter(
+                CountryData.country_code == country_code,
+                CountryData.date == today
+            ).first() is None
+
+            if update_needed:
+                run_model_update(country_code)
+
             predictions = session.query(Prediction).filter(
                 Prediction.country_code == country_code
             ).all()
+
+            # If no predictions are available, run the ML model update and re-query.
+            if not predictions:
+                run_model_update(country_code)
+                predictions = session.query(Prediction).filter(
+                    Prediction.country_code == country_code
+                ).all()
 
             data = {
                 "tomorrow": [],
@@ -117,9 +147,26 @@ def get_predictions():
 
     session = SessionLocal()
     try:
+        # Check if today's data exists; if not, trigger update.
+        today = date.today()
+        update_needed = session.query(CountryData).filter(
+            CountryData.country_code == country_code,
+            CountryData.date == today
+        ).first() is None
+
+        if update_needed:
+            run_model_update(country_code)
+
         predictions = session.query(Prediction).filter(
             Prediction.country_code == country_code
         ).all()
+
+        # If no predictions are available, run the ML model update and re-query.
+        if not predictions:
+            run_model_update(country_code)
+            predictions = session.query(Prediction).filter(
+                Prediction.country_code == country_code
+            ).all()
 
         data = {"tomorrow": [], "threeDays": [], "fiveDays": []}
         for pred in predictions:

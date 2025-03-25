@@ -1,0 +1,11 @@
+file locations:
+Tomorrow's Trends
+-frontend
+--src
+---components
+----WorldMap.vue
+-backend
+--app.py
+-ML model
+--model.py
+--db.py

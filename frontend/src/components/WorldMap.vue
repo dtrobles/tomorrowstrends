@@ -6,24 +6,23 @@
     <!-- Modal overlay: only visible when a country is selected -->
     <div v-if="selectedCountry" class="modal-overlay" @click.self="closeModal">
       <div class="modal">
+        <!-- Title & Horizontal Rule -->
         <h2 class="modalTitle">News Prediction</h2>
         <hr />
 
-        <!-- COUNTRY & DATE DROPDOWN -->
-        <p>{{ selectedCountry }}</p>
-        <label for="dateSelect"><strong>Select Date: </strong></label>
-        <select id="dateSelect" v-model="selectedDateOption">
-          <option v-for="opt in dateOptions" :key="opt.value" :value="opt.value">
-            {{ opt.label }}
-          </option>
-        </select>
+        <!-- Country and Date Dropdown -->
+        <p class="country-date-line">
+          {{ selectedCountry }} |
+          <select v-model="selectedDateOption" class="date-dropdown">
+            <option v-for="opt in dateOptions" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </option>
+          </select>
+        </p>
 
-        <!-- ARTICLES SECTION -->
+        <!-- Articles Section (3-Bar Layout) -->
         <div class="news-articles">
           <div class="prediction-section">
-            <h3>Articles for {{ currentDateLabel }}</h3>
-            
-            <!-- 3-Bar layout (page-based) -->
             <div class="bar-container">
               <div 
                 v-for="(trend, index) in displayedArticles" 
@@ -31,18 +30,18 @@
                 class="trend-bar"
               >
                 <img 
-                  src="https://via.placeholder.com/120x80" 
+                  :src="trend.imageUrl" 
                   alt="Article Image" 
                   class="trend-image"
                 />
                 <div class="trend-content">
-                  <h4>{{ trend }}</h4>
+                  <h4>{{ trend.title }}</h4>
                   <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>
                 </div>
               </div>
             </div>
 
-            <!-- PAGINATION BUTTONS -->
+            <!-- Pagination Buttons -->
             <div class="pagination-buttons">
               <button 
                 class="prev-button" 
@@ -82,36 +81,25 @@ export default defineComponent({
     const map = ref<mapboxgl.Map | null>(null);
     const selectedCountry = ref<string | null>(null);
 
-    // Holds the predictions fetched from backend
+    // Updated predictions: now each article is an object with a title and an imageUrl
     const predictions = ref({
-      tomorrow: [] as string[],    // +1
-      threeDays: [] as string[],  // +3
-      fiveDays: [] as string[],   // +5
+      tomorrow: [] as { title: string, imageUrl: string }[],
+      threeDays: [] as { title: string, imageUrl: string }[],
+      fiveDays: [] as { title: string, imageUrl: string }[],
     });
 
     // -------------------------------------------
-    //  DATE DROPDOWN & PAGINATION
+    // DATE DROPDOWN & PAGINATION
     // -------------------------------------------
-    /**
-     * For the dropdown, we build an array of date options:
-     *   value = 1, 3, or 5   -> corresponds to tomorrow/3Days/5Days
-     *   label = e.g. "Mar 16, 2025" (today +1) – or any format you like
-     */
     const dateOptions = ref([
       { value: 1, label: formatDatePlusDays(1) },
       { value: 3, label: formatDatePlusDays(3) },
       { value: 5, label: formatDatePlusDays(5) },
     ]);
-
-    // The user’s selection from the dropdown
     const selectedDateOption = ref<number>(1);
-
-    // For pagination (3 items per page)
     const pageIndex = ref(0);
     const trendsPerPage = 3;
 
-    // This computed picks the correct array from "predictions"
-    // based on the user’s dropdown selection.
     const selectedArticles = computed(() => {
       if (selectedDateOption.value === 1) {
         return predictions.value.tomorrow;
@@ -122,44 +110,31 @@ export default defineComponent({
       }
     });
 
-    // Sliced array: only 3 items based on current pageIndex
     const displayedArticles = computed(() => {
       const start = pageIndex.value * trendsPerPage;
-      const end = start + trendsPerPage;
-      return selectedArticles.value.slice(start, end);
+      return selectedArticles.value.slice(start, start + trendsPerPage);
     });
 
-    // Total pages for the chosen set of articles
     const totalPages = computed(() => {
       return Math.ceil(selectedArticles.value.length / trendsPerPage);
     });
 
-    // Show date in heading: e.g. "Mar 16, 2025"
-    const currentDateLabel = computed(() => {
-      const option = dateOptions.value.find(o => o.value === selectedDateOption.value);
-      return option ? option.label : '';
-    });
-
-    // Move to the next page if possible
     const nextPage = () => {
       if (pageIndex.value < totalPages.value - 1) {
         pageIndex.value++;
       }
     };
 
-    // Move to the previous page if possible
     const prevPage = () => {
       if (pageIndex.value > 0) {
         pageIndex.value--;
       }
     };
 
-    // If the user switches date from the dropdown, reset pageIndex
     watch(selectedDateOption, () => {
       pageIndex.value = 0;
     });
 
-    // Simple date formatter for "today + N days"
     function formatDatePlusDays(days: number) {
       const d = new Date();
       d.setDate(d.getDate() + days);
@@ -170,15 +145,10 @@ export default defineComponent({
     // -------------------------------------------
 
     let hoveredStateId: number | string | null = null;
-
-    // Mapbox access token
     mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
-    console.log('Mapbox token:', import.meta.env.VITE_MAPBOX_TOKEN);
 
-    // Initialize map on mount
     onMounted(() => {
       if (!mapContainer.value) return;
-
       map.value = new mapboxgl.Map({
         style: 'mapbox://styles/notaspect0/cm6yfnj5a00oa01sb3y1pfflk',
         container: mapContainer.value,
@@ -189,13 +159,11 @@ export default defineComponent({
       });
 
       map.value.on('load', () => {
-        // Add your vector source
         map.value!.addSource('countries', {
           type: 'vector',
           url: 'http://localhost:8080/data/output_hi.json',
         });
 
-        // Add fill layer
         map.value!.addLayer({
           id: 'country-fills',
           type: 'fill',
@@ -207,7 +175,6 @@ export default defineComponent({
           },
         });
 
-        // Click event to select a country
         map.value!.on('click', (e: mapboxgl.MapMouseEvent) => {
           const features = map.value!.queryRenderedFeatures(e.point, {
             layers: ['country-fills'],
@@ -221,7 +188,6 @@ export default defineComponent({
           }
         });
 
-        // Hover effect
         map.value!.on(
           'mousemove',
           'country-fills',
@@ -230,13 +196,11 @@ export default defineComponent({
             map.value!.getCanvas().style.cursor = 'pointer';
             const newFeatureId = e.features[0].id;
             if (hoveredStateId !== null && hoveredStateId !== newFeatureId) {
-              // Reset previous hover
               map.value!.setFeatureState(
                 { source: 'countries', sourceLayer: 'hidef', id: hoveredStateId },
                 { opacity: 0 }
               );
               hoveredStateId = newFeatureId;
-              // Set new hover
               map.value!.setFeatureState(
                 { source: 'countries', sourceLayer: 'hidef', id: newFeatureId },
                 { opacity: 0.6 }
@@ -251,7 +215,6 @@ export default defineComponent({
           }, 100)
         );
 
-        // Mouse leave
         map.value!.on('mouseleave', 'country-fills', () => {
           if (hoveredStateId !== null) {
             map.value!.setFeatureState(
@@ -265,14 +228,33 @@ export default defineComponent({
       });
     });
 
-    // Remove map on unmount
     onBeforeUnmount(() => {
       if (map.value) {
         map.value.remove();
       }
     });
 
-    // Fetch predictions from your Flask GraphQL backend
+    // New helper function to fetch an image for a given article title.
+    async function fetchArticleImage(articleTitle: string): Promise<string> {
+      const query = encodeURIComponent(`${articleTitle} article`);
+      // Replace with your own API key and Custom Search Engine ID
+      const apiKey = 'YOUR_GOOGLE_API_KEY';
+      const cx = 'YOUR_CUSTOM_SEARCH_ENGINE_ID';
+      const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&searchType=image&q=${query}`;
+      try {
+        const response = await fetch(url);
+        const data = await response.json();
+        if (data.items && data.items.length) {
+          return data.items[0].link;
+        }
+      } catch (error) {
+        console.error("Error fetching image:", error);
+      }
+      // Fallback image
+      return 'https://via.placeholder.com/120x80';
+    }
+
+    // Updated fetchPredictions to also fetch article images.
     async function fetchPredictions(country: string) {
       const query = `
         query($country: String) {
@@ -291,16 +273,34 @@ export default defineComponent({
           body: JSON.stringify({ query, variables }),
         });
         const result = await response.json();
-        console.log("[DEBUG] GraphQL response received:", result);
         if (result.data && result.data.predictions) {
-          predictions.value = result.data.predictions;
+          const fetched = result.data.predictions;
+          // Transform each article title into an object with title and imageUrl
+          predictions.value.tomorrow = await Promise.all(
+            fetched.tomorrow.map(async (title: string) => ({
+              title,
+              imageUrl: await fetchArticleImage(title)
+            }))
+          );
+          predictions.value.threeDays = await Promise.all(
+            fetched.threeDays.map(async (title: string) => ({
+              title,
+              imageUrl: await fetchArticleImage(title)
+            }))
+          );
+          predictions.value.fiveDays = await Promise.all(
+            fetched.fiveDays.map(async (title: string) => ({
+              title,
+              imageUrl: await fetchArticleImage(title)
+            }))
+          );
         }
       } catch (error) {
         console.error("Error fetching predictions:", error);
       }
     }
 
-    // When a new country is selected, reset the page and fetch predictions
+    // When a new country is selected, reset page and fetch predictions
     watch(selectedCountry, (newCountry) => {
       if (newCountry) {
         pageIndex.value = 0;
@@ -310,7 +310,6 @@ export default defineComponent({
       }
     });
 
-    // Close modal
     const closeModal = () => {
       selectedCountry.value = null;
     };
@@ -320,11 +319,8 @@ export default defineComponent({
       selectedCountry,
       predictions,
       closeModal,
-      // date dropdown
       dateOptions,
       selectedDateOption,
-      currentDateLabel,
-      // pagination
       pageIndex,
       displayedArticles,
       totalPages,
@@ -336,17 +332,27 @@ export default defineComponent({
 </script>
 
 <style scoped>
-/* Minimal example styling – adjust as needed */
-
-/* Container for the 3 "bars" (articles) */
+/* ... (unchanged styles) ... */
+.country-date-line {
+  text-align: center;
+  margin: 0.75rem auto;
+  font-size: 1.1rem;
+}
+.date-dropdown {
+  background-color: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  border: none;
+  padding: 0.4rem 0.8rem;
+  margin-left: 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
 .bar-container {
   display: flex;
   flex-direction: column;
   gap: 1rem;
   margin-top: 1rem;
 }
-
-/* Each individual article bar */
 .trend-bar {
   display: flex;
   background-color: #1c1c1c;
@@ -354,29 +360,21 @@ export default defineComponent({
   border-radius: 8px;
   align-items: center;
 }
-
-/* Example for image sizing */
 .trend-image {
   width: 120px;
   height: 80px;
   object-fit: cover;
   margin-right: 1rem;
 }
-
-/* Text content of each article */
 .trend-content {
   display: flex;
   flex-direction: column;
 }
-
-/* Pagination buttons side by side, inside the modal */
 .pagination-buttons {
   display: flex;
   justify-content: space-between;
   margin-top: 1rem;
 }
-
-/* Semi-large rectangle buttons */
 .prev-button,
 .next-button {
   padding: 0.75rem 1.5rem;
@@ -387,8 +385,6 @@ export default defineComponent({
   border-radius: 6px;
   cursor: pointer;
 }
-
-/* Disabled state for pagination buttons */
 .prev-button:disabled,
 .next-button:disabled {
   opacity: 0.4;
